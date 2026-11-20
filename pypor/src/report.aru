@@ -1,0 +1,41 @@
+module report
+
+import io
+
+import self.walker as walker
+
+/// Prints a summary report of the scan.
+public func printSummary(result: ref walker.ScanResult): void {
+    io.println("─────────────────────────────────────────────")
+    io.println("  Files: ${result.file_count}")
+    io.println("  Code:    ${result.total.code}")
+    io.println("  Comment: ${result.total.comment}")
+    io.println("  Blank:   ${result.total.blank}")
+    let total = result.total.code + result.total.comment + result.total.blank
+    io.println("  Total:   ${total}")
+    io.println("─────────────────────────────────────────────")
+}
+
+/// Prints high-precision timing breakdown across the phases of execution.
+public func printTimings(result: ref walker.ScanResult, workers: uint, isParallel: bool): void {
+    let t = ref result.timings
+    let total = t.total_ms
+    io.println("─────────────────────────────────────────────")
+    io.println("  Phase Timings (Monotonic Clock):")
+    if isParallel {
+        if total > 0 {
+            let walk_pct = (t.walk_ms * 100) / total
+            let fold_pct = (t.fold_ms * 100) / total
+            let clean_pct = (t.cleanup_ms * 100) / total
+            io.println("    Discovery (VFS + Vec):  ${t.walk_ms} ms (${walk_pct}%)")
+            io.println("    Parallel Fold (w=${workers}):     ${t.fold_ms} ms (${fold_pct}%)")
+            io.println("    Cleanup (Heap free):     ${t.cleanup_ms} ms (${clean_pct}%)")
+        } else {
+            io.println("    Discovery (VFS + Vec):  ${t.walk_ms} ms")
+            io.println("    Parallel Fold (w=${workers}):     ${t.fold_ms} ms")
+            io.println("    Cleanup (Heap free):     ${t.cleanup_ms} ms")
+        }
+    }
+    io.println("    Total Measured:         ${total} ms")
+    io.println("─────────────────────────────────────────────")
+}

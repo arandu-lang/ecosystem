@@ -1,0 +1,184 @@
+module language
+
+import std.core.str as strings
+
+import std.core.intrinsics as intrinsics
+
+import std.core.slice as slice
+
+public enum LanguageKind {
+    Arandu,
+    Rust,
+    C,
+    Cpp,
+    Go,
+    Python,
+    JavaScript,
+    TypeScript,
+    Markdown,
+    Toml,
+    Unknown,
+}
+
+/// Compact lexical configuration consumed directly by the byte scanner.
+public struct Language {
+    public kind: LanguageKind
+    public line_comment_first: u8
+    public line_comment_second: u8
+    public line_comment_len: usize
+    public block_start_first: u8
+    public block_start_second: u8
+    public block_end_first: u8
+    public block_end_second: u8
+    public has_block_comments: bool
+    public nested_blocks: bool
+    public single_quote_strings: bool
+    public triple_quote_strings: bool
+    public rust_raw_strings: bool
+}
+
+func cLike(kind: LanguageKind, nestedBlocks: bool): Language {
+    let mut singleQuoteStrings = true
+    let mut rustRawStrings = false
+    if kind is LanguageKind.Rust {
+        // In Rust, apostrophes introduce lifetimes as well as character
+        // literals. Treating every apostrophe as a quote swallows code and
+        // comments after a lifetime such as `&'a T`.
+        singleQuoteStrings = false
+        rustRawStrings = true
+    }
+    return Language {
+        kind: kind,
+        line_comment_first: b'/',
+        line_comment_second: b'/',
+        line_comment_len: 2,
+        block_start_first: b'/',
+        block_start_second: b'*',
+        block_end_first: b'*',
+        block_end_second: b'/',
+        has_block_comments: true,
+        nested_blocks: nestedBlocks,
+        single_quote_strings: singleQuoteStrings,
+        triple_quote_strings: false,
+        rust_raw_strings: rustRawStrings,
+    }
+}
+
+func lineOnly(kind: LanguageKind, first: u8, second: u8, len: usize): Language {
+    let mut isPython = false
+    if kind is LanguageKind.Python {
+        isPython = true
+    }
+    return Language {
+        kind: kind,
+        line_comment_first: first,
+        line_comment_second: second,
+        line_comment_len: len,
+        block_start_first: 0,
+        block_start_second: 0,
+        block_end_first: 0,
+        block_end_second: 0,
+        has_block_comments: false,
+        nested_blocks: false,
+        single_quote_strings: isPython,
+        triple_quote_strings: isPython,
+        rust_raw_strings: false,
+    }
+}
+
+public func detectLanguage(filename: str): Language {
+    if strings.endsWith(filename, ".aru") {
+        return cLike(LanguageKind.Arandu, true)
+    }
+    if strings.endsWith(filename, ".rs") {
+        return cLike(LanguageKind.Rust, true)
+    }
+    if strings.endsWith(filename, ".c") || strings.endsWith(filename, ".h") {
+        return cLike(LanguageKind.C, false)
+    }
+    if strings.endsWith(filename, ".cpp")
+    || strings.endsWith(filename, ".hpp")
+    || strings.endsWith(filename, ".cc")
+    || strings.endsWith(filename, ".inl") {
+        return cLike(LanguageKind.Cpp, false)
+    }
+    if strings.endsWith(filename, ".go") {
+        return cLike(LanguageKind.Go, true)
+    }
+    if strings.endsWith(filename, ".py") || strings.endsWith(filename, ".pyi") {
+        return lineOnly(LanguageKind.Python, b'#', 0, 1)
+    }
+    if strings.endsWith(filename, ".js") || strings.endsWith(filename, ".jsx") {
+        return cLike(LanguageKind.JavaScript, false)
+    }
+    if strings.endsWith(filename, ".ts") || strings.endsWith(filename, ".tsx") {
+        return cLike(LanguageKind.TypeScript, false)
+    }
+    if strings.endsWith(filename, ".md") {
+        return lineOnly(LanguageKind.Markdown, 0, 0, 0)
+    }
+    if strings.endsWith(filename, ".toml") {
+        return lineOnly(LanguageKind.Toml, b'#', 0, 1)
+    }
+    return lineOnly(LanguageKind.Unknown, 0, 0, 0)
+}
+
+public func unknownLanguage(): Language {
+    return lineOnly(LanguageKind.Unknown, 0, 0, 0)
+}
+
+public func Language.isSupported(self: ref Language): bool {
+    if self.kind is LanguageKind.Unknown {
+        return false
+    }
+    return true
+}
+
+public func Language.isRust(self: ref Language): bool {
+    if self.kind is LanguageKind.Rust {
+        return true
+    }
+    return false
+}
+
+/// Lexical feature mask, selected once per input rather than per byte.
+/// Different languages with the same features share one scanner instance.
+public func Language.scannerProfile(self: ref Language): uint {
+    let mut profile: uint = 0
+    if self.isRust() { profile = profile | 1 }
+    if self.rust_raw_strings { profile = profile | 2 }
+    if self.single_quote_strings { profile = profile | 4 }
+    if self.triple_quote_strings { profile = profile | 8 }
+    if self.has_block_comments { profile = profile | 16 }
+    if self.nested_blocks { profile = profile | 32 }
+    return profile
+}
+
+func byteSpanEquals(bytes: []u8, start: usize, end: usize, expected: str): bool {
+    let expectedBytes = intrinsics.strBytes(expected)
+    let expectedLen = slice.len<u8>(expectedBytes)
+    if end < start || end - start != expectedLen {
+        return false
+    }
+    let mut i: usize = 0 as usize
+    while i < expectedLen {
+        if bytes[start + i] != expectedBytes[i] {
+            return false
+        }
+        i = i + 1 as usize
+    }
+    return true
+}
+
+public func isRustDocFence(bytes: []u8, start: usize, end: usize): bool {
+    return byteSpanEquals(bytes, start, end, "rust") || byteSpanEquals(bytes, start, end, "rs")
+}
+
+public func isPythonDocFence(bytes: []u8, start: usize, end: usize): bool {
+    return byteSpanEquals(bytes, start, end, "python") || byteSpanEquals(bytes, start, end, "py")
+}
+
+public func isSupported(filename: str): bool {
+    let lang = detectLanguage(filename)
+    return lang.isSupported()
+}

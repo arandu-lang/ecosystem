@@ -1,0 +1,397 @@
+module walker
+
+import io
+import std.fs as fs
+import std.path as path
+import std.core.str as strings
+import std.alloc.string as ownedStrings
+import std.alloc.vec as vec
+import std.parallel as parallel
+import std.time as time
+
+import self.language as language
+import self.counter as counter
+
+/// An individual source file item for batch and parallel processing.
+public struct FileItem {
+    public path: ownedStrings.String,
+    public lang: language.Language,
+}
+
+/// A job that reads and counts lines for a single `FileItem`.
+public struct FileCountJob {
+    public printFiles: bool
+}
+
+@Effects(FileRead, Foreign)
+public func FileCountJob.run(
+    self: ref FileCountJob,
+    item: ref FileItem,
+    state: mut ref counter.Stats
+): void {
+    let pathStr = item.path.asStr()
+    match fs.readToString(pathStr) {
+        Ok(content) => {
+            let bytes = ownedStrings.asBytes(content)
+            let stats = counter.countBytes(bytes, ref item.lang)
+
+            if self.printFiles {
+                io.println("  ${pathStr}    ${stats.code}    ${stats.comment}    ${stats.blank}")
+            }
+
+            state.add(ref stats)
+            content.destroy()
+        }
+        Err(_) => {
+            io.println("warn: could not read ${pathStr}")
+        }
+    }
+}
+
+/// High-resolution monotonic timings for the distinct phases of execution.
+public struct PhaseTimings {
+    public walk_ms: int
+    public fold_ms: int
+    public cleanup_ms: int
+    public total_ms: int
+}
+
+/// Creates zeroed `PhaseTimings`.
+public func zeroTimings(): PhaseTimings {
+    return PhaseTimings {
+        walk_ms: 0,
+        fold_ms: 0,
+        cleanup_ms: 0,
+        total_ms: 0,
+    }
+}
+
+/// Aggregate result of scanning a directory tree.
+public struct ScanResult {
+    public total: counter.Stats
+    public file_count: usize
+    public timings: PhaseTimings
+}
+
+/// Creates a zeroed `ScanResult`.
+public func zeroResult(): ScanResult {
+    return ScanResult {
+        total: counter.zeroStats(),
+        file_count: 0,
+        timings: zeroTimings(),
+    }
+}
+
+/// Accumulates file stats into the scan result.
+public func ScanResult.addFile(self: mut ref ScanResult, stats: ref counter.Stats): void {
+    self.total.add(stats)
+    self.file_count = self.file_count + 1
+}
+
+/// Returns whether a directory belongs to the source traversal. Hidden
+/// directories are skipped; only a root-level `target` is treated as build output.
+public func shouldScanDirectory(name: str, isRoot: bool): bool {
+    if strings.startsWith(name, ".") || (isRoot && name == "target") {
+        return false
+    }
+    return true
+}
+
+/// Hidden files are excluded to match Tokei's default traversal policy.
+public func shouldScanFile(name: str): bool {
+    return !strings.startsWith(name, ".")
+}
+
+/// Walks a directory recursively, counting lines for every recognised file.
+///
+/// When `printFiles` is true, prints one line per file in the format
+/// `path  code  comment  blank`.
+@Effects(FileRead, Foreign)
+public func scanDir(dir: str, result: mut ref ScanResult, printFiles: bool): void {
+    let t_start = time.now()
+    scanDirRecursive(dir, result, printFiles, true)
+    let d = time.now().durationSince(t_start)
+    result.timings.total_ms = d.asMillis() as int
+}
+
+@Effects(FileRead, Foreign)
+func scanDirRecursive(dir: str, result: mut ref ScanResult, printFiles: bool, isRoot: bool): void {
+    match fs.readDir(dir) {
+        Ok(mut listing) => {
+            let n = listing.count()
+            let mut i: usize = 0
+            while i < n {
+                let isDir = listing.isDir(i)
+                let name = listing.nameStr(i)
+                let fullPath: ownedStrings.String = path.joinOwned(dir, name)
+
+                if isDir {
+                    if shouldScanDirectory(name, isRoot) {
+                        scanDirRecursive(fullPath.asStr(), result, printFiles, false)
+                    }
+                } else {
+                    if shouldScanFile(name) && language.isSupported(name) {
+                        scanFile(fullPath.asStr(), name, result, printFiles)
+                    }
+                }
+                fullPath.destroy()
+                i = i + 1
+            }
+            listing.destroy()
+        }
+        Err(_) => {
+            io.println("warn: could not read directory ${dir}")
+        }
+    }
+}
+
+/// Reads and counts a single file, printing its stats.
+@Effects(FileRead, Foreign)
+func scanFile(filePath: str, name: str, result: mut ref ScanResult, printFiles: bool): void {
+    match fs.readToString(filePath) {
+        Ok(content) => {
+            let lang = language.detectLanguage(name)
+            let bytes = ownedStrings.asBytes(content)
+            let stats = counter.countBytes(bytes, lang)
+
+            if printFiles {
+                io.println("  ${filePath}    ${stats.code}    ${stats.comment}    ${stats.blank}")
+            }
+
+            result.addFile(stats)
+            content.destroy()
+        }
+        Err(_) => {
+            io.println("warn: could not read ${filePath}")
+        }
+    }
+}
+
+/// Recursively collects all supported source files into `files`.
+@Effects(FileRead, Foreign)
+public func collectFiles(dir: str, files: mut ref vec.Vec<FileItem>): void {
+    collectFilesAt(dir, files, true)
+}
+
+@Effects(FileRead, Foreign)
+func collectFilesAt(dir: str, files: mut ref vec.Vec<FileItem>, isRoot: bool): void {
+    match fs.readDir(dir) {
+        Ok(mut listing) => {
+            let n = listing.count()
+            let mut i: usize = 0
+            while i < n {
+                let isDir = listing.isDir(i)
+                let name = listing.nameStr(i)
+                if isDir {
+                    if shouldScanDirectory(name, isRoot) {
+                        let fullPath: ownedStrings.String = path.joinOwned(dir, name)
+                        collectFilesAt(fullPath.asStr(), files, false)
+                        fullPath.destroy()
+                    }
+                } else {
+                    if shouldScanFile(name) {
+                        let lang = language.detectLanguage(name)
+                        if lang.isSupported() {
+                            let fullPath: ownedStrings.String = path.joinOwned(dir, name)
+                            let item = FileItem {
+                                path: fullPath,
+                                lang: lang,
+                            }
+                            files.push(item)
+                        }
+                    }
+                }
+                i = i + 1
+            }
+            listing.destroy()
+        }
+        Err(_) => {
+            io.println("warn: could not read directory ${dir}")
+        }
+    }
+}
+
+/// Recursively walks the directory tree counting matching files WITHOUT allocating String objects on the heap.
+/// Used to isolate pure VFS directory listing speed (T_walk_dry).
+@Effects(FileRead, Foreign)
+public func collectFilesDry(dir: str): usize {
+    return collectFilesDryAt(dir, true)
+}
+
+@Effects(FileRead, Foreign)
+func collectFilesDryAt(dir: str, isRoot: bool): usize {
+    let mut count: usize = 0 as usize
+    match fs.readDir(dir) {
+        Ok(mut listing) => {
+            let n = listing.count()
+            let mut i: usize = 0
+            while i < n {
+                let isDir = listing.isDir(i)
+                let name = listing.nameStr(i)
+                if isDir {
+                    if shouldScanDirectory(name, isRoot) {
+                        let fullPath = path.joinOwned(dir, name)
+                        count = count + collectFilesDryAt(fullPath.asStr(), false)
+                        fullPath.destroy()
+                    }
+                } else {
+                    if shouldScanFile(name) && language.isSupported(name) {
+                        count = count + 1
+                    }
+                }
+                i = i + 1
+            }
+            listing.destroy()
+        }
+        Err(_) => {}
+    }
+    return count
+}
+
+func benchWorkerFold(
+    fileSlice: []FileItem,
+    seed: counter.Stats,
+    identity: ref counter.Stats,
+    job: FileCountJob,
+    combiner: counter.StatsCombiner,
+    workers: uint,
+    baseline_ms: int
+): int {
+    let t_start = time.monotonicNs()
+    let mut dur_ms: int = 0
+    match parallel.parallelFoldWithGrain(
+        fileSlice, seed, identity, job, combiner, workers, 256, 32768
+    ) {
+        Ok(stats) => {
+            dur_ms = ((time.monotonicNs() - t_start) / 1000000) as int
+            io.println("    Fold checksum (w=${workers}): ${stats.total()}")
+        }
+        Err(_) => {
+            dur_ms = ((time.monotonicNs() - t_start) / 1000000) as int
+            io.println("    Fold (w=${workers}) failed")
+        }
+    }
+    if baseline_ms <= 0 {
+        io.println("    Fold (w=${workers}): ${dur_ms} ms (1.00x)")
+    } else {
+        let mut div = dur_ms
+        if div <= 0 { div = 1 }
+        let sp = (baseline_ms * 100) / div
+        io.println("    Fold (w=${workers}): ${dur_ms} ms (${sp / 100}.${sp % 100}x)")
+    }
+    return dur_ms
+}
+
+func cleanupFiles(files: mut ref vec.Vec<FileItem>): void {
+    vec.destroy(files)
+}
+
+/// Benchmarks isolated execution phases to measure the components of Amdahl's Law.
+@Effects(FileRead, Foreign)
+public func benchPhases(dir: str): void {
+    io.println("=====================================================")
+    io.println("  Pypor Phase Profiler (Amdahl Breakdown)")
+    io.println("  Directory: ${dir}")
+    io.println("=====================================================")
+
+    // Phase 1: Dry VFS traversal (no heap string allocations)
+    io.println(">>> 1. Measuring collectFilesDry (pure VFS traversal)...")
+    let t1_start = time.now()
+    let dry_count = collectFilesDry(dir)
+    let t1_ms = time.now().durationSince(t1_start).asMillis() as int
+    io.println("    Found ${dry_count} files in ${t1_ms} ms")
+
+    // Phase 2: Full collectFiles with heap allocation
+    io.println(">>> 2. Measuring collectFiles (VFS + Vec<FileItem> allocation)...")
+    let t2_start = time.now()
+    let mut files = vec.new<FileItem>()
+    collectFiles(dir, files)
+    let t2_ms = time.now().durationSince(t2_start).asMillis() as int
+    let total_files = files.len()
+    io.println("    Collected ${total_files} files in ${t2_ms} ms")
+    let alloc_overhead = t2_ms - t1_ms
+    io.println("    Estimated Heap Allocation Overhead: ${alloc_overhead} ms")
+
+    // Phase 3: Fold scaling isolated over pre-collected files
+    io.println(">>> 3. Measuring parallelFold alone across workers (pre-loaded files)...")
+    let fileSlice = files.asSlice()
+    let job = FileCountJob { printFiles: false }
+    let combiner = counter.StatsCombiner {}
+    let seed = counter.zeroStats()
+    let identity = counter.zeroStats()
+
+    let tf1_ms = benchWorkerFold(fileSlice, seed, ref identity, job, combiner, 1, 0)
+    let _tf2 = benchWorkerFold(fileSlice, seed, ref identity, job, combiner, 2, tf1_ms)
+    let _tf4 = benchWorkerFold(fileSlice, seed, ref identity, job, combiner, 4, tf1_ms)
+    let _tf8 = benchWorkerFold(fileSlice, seed, ref identity, job, combiner, 8, tf1_ms)
+
+    // Phase 4: Cleanup
+    io.println(">>> 4. Measuring heap cleanup...")
+    let tc_start = time.now()
+    cleanupFiles(files)
+    let tc_ms = time.now().durationSince(tc_start).asMillis() as int
+    io.println("    Heap Cleanup: ${tc_ms} ms")
+    io.println("=====================================================")
+}
+
+/// Scans a directory in parallel using `parallelFoldWithGrain` over collected files,
+/// capturing high-resolution monotonic durations for each distinct phase.
+@Effects(FileRead, Foreign)
+public func scanDirParallel(
+    dir: str,
+    result: mut ref ScanResult,
+    printFiles: bool,
+    workers: uint
+): void {
+    // File listing is user-visible and therefore remains ordinal.
+    if printFiles {
+        scanDir(dir, result, true)
+        return
+    }
+
+    let t_total_start = time.now()
+
+    let t_walk_start = time.now()
+    let mut files = vec.new<FileItem>()
+    collectFiles(dir, files)
+    let t_walk_dur = time.now().durationSince(t_walk_start)
+
+    let fileSlice = files.asSlice()
+
+    let job = FileCountJob { printFiles: printFiles }
+    let combiner = counter.StatsCombiner {}
+    let seed = counter.zeroStats()
+    let identity = counter.zeroStats()
+
+    let t_fold_start = time.now()
+    match parallel.parallelFoldWithGrain(
+        fileSlice,
+        seed,
+        ref identity,
+        job,
+        combiner,
+        workers,
+        256,
+        32768
+    ) {
+        Ok(stats) => {
+            result.total = stats
+            result.file_count = stats.files as usize
+        }
+        Err(_) => {
+            io.println("error: parallel processing failed")
+        }
+    }
+    let t_fold_dur = time.now().durationSince(t_fold_start)
+
+    let t_clean_start = time.now()
+    cleanupFiles(files)
+    let t_clean_dur = time.now().durationSince(t_clean_start)
+
+    let t_total_dur = time.now().durationSince(t_total_start)
+
+    result.timings.walk_ms = t_walk_dur.asMillis() as int
+    result.timings.fold_ms = t_fold_dur.asMillis() as int
+    result.timings.cleanup_ms = t_clean_dur.asMillis() as int
+    result.timings.total_ms = t_total_dur.asMillis() as int
+}

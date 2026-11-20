@@ -1,0 +1,82 @@
+module pypor
+
+import io
+import std.env as env
+
+import self.walker as walker
+import self.report as report
+
+func parseWorkers(s: str): uint {
+    if s == "1" { return 1 }
+    if s == "2" { return 2 }
+    if s == "3" { return 3 }
+    if s == "4" { return 4 }
+    if s == "6" { return 6 }
+    if s == "8" { return 8 }
+    if s == "12" { return 12 }
+    if s == "16" { return 16 }
+    if s == "32" { return 32 }
+    return 4
+}
+
+@Effects(FileRead, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    let mut dir = "."
+    let mut printFiles = false
+    let mut workers: uint = 4
+    let mut sequential = false
+    let mut timing = false
+    let mut benchPhases = false
+
+    let mut i: int = 1
+    while i < argc {
+        let a = env.arg(i)
+        if a == "--files" {
+            printFiles = true
+        } else if a == "--seq" {
+            sequential = true
+        } else if a == "--timing" {
+            timing = true
+        } else if a == "--bench-phases" {
+            benchPhases = true
+        } else if a == "--workers" {
+            i = i + 1
+            if i < argc {
+                workers = parseWorkers(env.arg(i))
+            }
+        } else {
+            dir = a
+        }
+        i = i + 1
+    }
+
+    if benchPhases {
+        walker.benchPhases(dir)
+        return 0
+    }
+
+    io.println("pypor — line counter")
+    io.println("scanning: ${dir}")
+    io.println("workers:  ${workers}")
+    io.println("")
+    if printFiles {
+        io.println("  Path         Code  Comment  Blank")
+        io.println("─────────────────────────────────────────────")
+    }
+
+    let mut result = walker.zeroResult()
+    if sequential {
+        walker.scanDir(dir, result, printFiles)
+    } else {
+        walker.scanDirParallel(dir, result, printFiles, workers)
+    }
+
+    io.println("")
+    report.printSummary(result)
+    if timing {
+        report.printTimings(result, workers, !sequential)
+    }
+
+    return 0
+}

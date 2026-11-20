@@ -1,0 +1,316 @@
+module pypor_tests
+
+import std.alloc.string as strings
+
+import std.alloc.vec as vec
+
+import std.parallel as parallel
+
+import std.testing as testing
+
+import std.core.ascii as ascii
+
+import self.counter as counter
+
+import self.language as language
+
+import self.walker as walker
+
+@Test
+func comptime_scanner_classes_match_the_original_rules_for_every_byte(): void {
+    let horizontal = comptime ascii.byteSet(" \t\r")
+    let horizontalTable = comptime ascii.byteTable(" \t\r")
+    let identifier = comptime ascii.byteSet("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+    let mut value: uint = 0
+    while value < 256 {
+        let b = value as u8
+        let expectedHorizontal = b == 32 || b == 9 || b == 13
+        let expectedIdentifier = (b >= 97 && b <= 122)
+        || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 95
+        testing.expect(horizontal.contains(b) == expectedHorizontal, "horizontal byte=${value}")
+        testing.expect(horizontalTable[value as usize] == expectedHorizontal, "horizontal table byte=${value}")
+        testing.expect(identifier.contains(b) == expectedIdentifier, "identifier byte=${value}")
+        value = value + 1
+    }
+}
+
+struct Sum {
+    value: int
+}
+
+@Test
+func scanner_profiles_share_features_and_preserve_custom_configuration(): void {
+    let c = language.detectLanguage("fixture.c")
+    let js = language.detectLanguage("fixture.js")
+    let rs = language.detectLanguage("fixture.rs")
+    let py = language.detectLanguage("fixture.py")
+    let go = language.detectLanguage("fixture.go")
+    let toml = language.detectLanguage("fixture.toml")
+    testing.expect(c.scannerProfile() == 20, "C profile")
+    testing.expect(js.scannerProfile() == c.scannerProfile(), "JS shares the C lexical profile")
+    testing.expect(rs.scannerProfile() == 51, "Rust profile")
+    testing.expect(py.scannerProfile() == 12, "Python profile")
+    testing.expect(go.scannerProfile() == 52, "Go profile")
+    testing.expect(toml.scannerProfile() == 0, "line-only profile")
+
+    let mut custom = language.detectLanguage("fixture.toml")
+    custom.has_block_comments = true
+    custom.nested_blocks = true
+    custom.block_start_first = b'/'
+    custom.block_start_second = b'*'
+    custom.block_end_first = b'*'
+    custom.block_end_second = b'/'
+    testing.expect(custom.scannerProfile() == 48, "custom combination takes the dynamic fallback")
+    let source = strings.from("/* outer\n/* nested */\nend */\nvalue = 1\n# comment\n")
+    let stats = counter.countBytes(strings.asBytes(source), custom)
+    testing.expect(stats.code == 1 && stats.comment == 4 && stats.blank == 0, "custom nested block and line comments")
+    source.destroy()
+}
+
+struct SumJob {}
+
+func SumJob.run(self: ref SumJob, item: ref int, state: mut ref Sum): void {
+    state.value = state.value + *item
+}
+
+struct SumCombine {}
+
+func SumCombine.combine(self: ref SumCombine, dest: mut ref Sum, partial: ref Sum): void {
+    dest.value = dest.value + partial.value
+}
+
+func expectParallelSum(items: []int, sequential: Sum, workers: uint): void {
+    let identity = Sum { value: 0 }
+    match parallel.parallelFold<int, Sum, SumJob, SumCombine>(
+    items,
+    Sum { value: 7 },
+    ref identity,
+    SumJob {},
+    SumCombine {},
+    workers
+    ) {
+        Ok(actual) => {
+            testing.expect(actual.value == sequential.value, "workers=${workers} parallel=${actual.value} sequential=${sequential.value}")
+            testing.expect(actual.value == 1032, "all items must be reduced exactly once")
+        }
+        Err(_) => {
+            testing.expect(false, "parallel fold must complete")
+        }
+    }
+}
+
+@Test
+func counts_code_comments_blank_and_unterminated_tail(): void {
+    let syntax = language.detectLanguage("fixture.c")
+    let code = strings.from("let value = 1")
+    let codeStats = counter.countBytes(strings.asBytes(code), syntax)
+    testing.expect(codeStats.code == 1, "unterminated code line")
+    code.destroy()
+
+    let comment = strings.from("  // comment")
+    let commentStats = counter.countBytes(strings.asBytes(comment), syntax)
+    testing.expect(commentStats.comment == 1, "comment line")
+    comment.destroy()
+
+    let blank = strings.from("   ")
+    let blankStats = counter.countBytes(strings.asBytes(blank), syntax)
+    testing.expect(blankStats.blank == 1, "blank line")
+    blank.destroy()
+}
+
+@Test
+func recognises_block_comments_and_ignores_markers_in_strings(): void {
+    let syntax = language.detectLanguage("fixture.c")
+
+    let block = strings.from("/* comment */")
+    let blockStats = counter.countBytes(strings.asBytes(block), syntax)
+    testing.expect(blockStats.comment == 1, "block comment")
+    block.destroy()
+
+    let multiline = strings.from("""
+    /* first
+    second */
+    """)
+    let multilineStats = counter.countBytes(strings.asBytes(multiline), syntax)
+    testing.expect(multilineStats.comment == 2, "multiline block comment")
+    multiline.destroy()
+
+    let mixed = strings.from("value(); /* comment */")
+    let mixedStats = counter.countBytes(strings.asBytes(mixed), syntax)
+    testing.expect(mixedStats.code == 1, "mixed line is code")
+    mixed.destroy()
+
+    let quoted = strings.from("let marker = \"/* not a comment */\"")
+    let quotedStats = counter.countBytes(strings.asBytes(quoted), syntax)
+    testing.expect(quotedStats.code == 1, "marker inside string")
+    quoted.destroy()
+}
+
+@Test
+func counts_whitespace_lines_inside_block_comments_as_comments(): void {
+    let syntax = language.detectLanguage("fixture.c")
+    let mut source = strings.new()
+    strings.pushStr(source, "/* start")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "   ")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "    ")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "end */")
+    let stats = counter.countBytes(strings.asBytes(source), syntax)
+    testing.expect(stats.comment == 4, "every line inside a block comment is a comment")
+    testing.expect(stats.blank == 0, "blank-looking lines inside comments are not source blanks")
+    source.destroy()
+}
+
+@Test
+func recognises_python_triple_quoted_strings(): void {
+    let syntax = language.detectLanguage("fixture.py")
+    let mut source = strings.new()
+    strings.pushStr(source, "\"\"\"first line")
+    strings.pushScalar(source, '\n')
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "# not a comment")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "last line\"\"\"")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "value = 1")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "'''single-quoted docstring")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "# still string content")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "'''")
+    let stats = counter.countBytes(strings.asBytes(source), syntax)
+    testing.expect(stats.code == 8, "both Python triple-quote delimiters preserve code lines")
+    testing.expect(stats.comment == 0, "a hash inside a triple-quoted string is not a comment")
+    testing.expect(stats.blank == 0, "a blank physical line inside a triple-quoted string is code")
+    source.destroy()
+}
+
+@Test
+func recognises_rust_raw_strings_without_comment_markers(): void {
+    let syntax = language.detectLanguage("fixture.rs")
+    let mut source = strings.new()
+    strings.pushStr(source, "let value = r##\"first // literal")
+    strings.pushScalar(source, '\n')
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "\"# not the closing delimiter")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/* literal */")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "\"##;")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "let other = 2")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "let bytes = br#\"// bytes\"#;")
+    let stats = counter.countBytes(strings.asBytes(source), syntax)
+    testing.expect(stats.code == 7, "Rust raw strings honor matching hash counts and byte prefixes")
+    testing.expect(stats.comment == 0, "comment markers inside a Rust raw string are text")
+    testing.expect(stats.blank == 0, "a blank physical line inside a raw string is code")
+    source.destroy()
+}
+
+@Test
+func rust_lifetimes_do_not_swallow_following_comments(): void {
+    let syntax = language.detectLanguage("fixture.rs")
+    let mut source = strings.new()
+    strings.pushStr(source, "let value: &'a str = 1;")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "// standalone comment after lifetime")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "let other: &'static str = 2;")
+    let stats = counter.countBytes(strings.asBytes(source), syntax)
+    testing.expect(stats.code == 2, "lifetimes do not open character-string state")
+    testing.expect(stats.comment == 1, "line comment after a lifetime is still recognized")
+    source.destroy()
+}
+
+@Test
+func rust_doc_comments_count_markdown_and_fenced_rust(): void {
+    let syntax = language.detectLanguage("fixture.rs")
+    let mut source = strings.new()
+    strings.pushStr(source, "/// API documentation")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "///")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// ```rust")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// fn example() {}")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// // embedded Rust comment")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// ```")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// ```python")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// # embedded Python comment")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// value = 3")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// ```")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// ```text")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// prose inside text fence")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "/// ```")
+    strings.pushScalar(source, '\n')
+    strings.pushStr(source, "fn actual() {}")
+    let stats = counter.countBytes(strings.asBytes(source), syntax)
+    testing.expect(stats.code == 3, "Rust and Python fence contents use their language classification")
+    testing.expect(stats.comment == 10, "Rust docs, code comments, and Markdown fence markers are classified")
+    testing.expect(stats.blank == 1, "empty Rust doc lines remain Markdown blanks")
+    source.destroy()
+}
+
+@Test
+func recognises_supported_extensions_without_string_tags(): void {
+    testing.expect(language.isSupported("main.aru"), "Arandu extension")
+    testing.expect(language.isSupported("tool.py"), "Python extension")
+    testing.expect(language.isSupported("perf.pyi"), "Python stub extension")
+    testing.expect(language.isSupported("fpa11.inl"), "Tokei C++ header extension")
+    testing.expect(!language.isSupported("image.png"), "unknown extension")
+}
+
+@Test
+func excludes_generated_and_hidden_directories(): void {
+    testing.expect(!walker.shouldScanDirectory("target", true), "root build output")
+    testing.expect(walker.shouldScanDirectory("target", false), "nested source target directory")
+    testing.expect(!walker.shouldScanDirectory(".git", false), "hidden metadata")
+    testing.expect(walker.shouldScanDirectory("src", true), "source directory")
+    testing.expect(!walker.shouldScanFile(".rustfmt.toml"), "hidden config file")
+    testing.expect(walker.shouldScanFile("kernel.c"), "visible source file")
+}
+
+@Test
+func parallel_and_sequential_scans_are_bit_identical(): void {
+    let mut seqResult = walker.zeroResult()
+    walker.scanDir("src", seqResult, false)
+
+    let mut parResult = walker.zeroResult()
+    walker.scanDirParallel("src", parResult, false, 4)
+
+    testing.expect(seqResult.file_count == parResult.file_count, "file_count must match")
+    testing.expect(seqResult.total.code == parResult.total.code, "code lines must match")
+    testing.expect(seqResult.total.comment == parResult.total.comment, "comment lines must match")
+    testing.expect(seqResult.total.blank == parResult.total.blank, "blank lines must match")
+    testing.expect(seqResult.total.total() == parResult.total.total(), "total lines must match")
+}
+
+@Test
+func parallel_fold_crosses_cutoff_and_applies_seed_once(): void {
+    let mut values = vec.new<int>()
+    let mut i: usize = 0 as usize
+    while i < 1025 {
+        vec.push<int>(values, 1)
+        i = i + (1 as usize)
+    }
+    let items = vec.asSlice<int>(values)
+    let sequential = parallel.foldSequential<int, Sum, SumJob>(items, Sum { value: 7 }, SumJob {})
+    expectParallelSum(items, sequential, 1)
+    expectParallelSum(items, sequential, 2)
+    expectParallelSum(items, sequential, 4)
+    expectParallelSum(items, sequential, 8)
+    vec.destroy<int>(values)
+}

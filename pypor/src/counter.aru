@@ -1,0 +1,520 @@
+module counter
+
+import std.core.slice as slice
+
+import std.core.ascii as ascii
+
+import self.language as language
+
+/// Line-count statistics for a single file.
+public struct Stats {
+    public files: uint
+    public code: uint
+    public comment: uint
+    public blank: uint
+}
+
+/// Returns total lines (code + comment + blank).
+public func Stats.total(self: ref Stats): uint {
+    return self.code + self.comment + self.blank
+}
+
+/// Creates a zeroed `Stats`.
+public func zeroStats(): Stats {
+    return Stats { files: 0, code: 0, comment: 0, blank: 0 }
+}
+
+/// Accumulates `other` into `self`.
+public func Stats.add(self: mut ref Stats, other: ref Stats): void {
+    self.files = self.files + other.files
+    self.code = self.code + other.code
+    self.comment = self.comment + other.comment
+    self.blank = self.blank + other.blank
+}
+
+/// Associative combiner for `Stats` satisfying `Combine<counter.Stats>`.
+public struct StatsCombiner {}
+
+public func StatsCombiner.combine(self: ref StatsCombiner, dest: mut ref Stats, partial: ref Stats): void {
+    dest.add(partial)
+}
+
+func finishLine(
+stats: mut ref Stats,
+hasNonWhitespace: bool,
+hasCode: bool,
+hasComment: bool,
+): void {
+    if !hasNonWhitespace {
+        stats.blank = stats.blank + 1
+    } else if hasCode {
+        // Mixed code/comment lines are code, matching cloc and tokei.
+        stats.code = stats.code + 1
+    } else if hasComment {
+        stats.comment = stats.comment + 1
+    } else {
+        stats.code = stats.code + 1
+    }
+}
+
+/// Counts physical code, comment, and blank lines in one pass without rewriting input.
+///
+/// The scanner recognises line comments, C-style block comments, quoted
+/// strings/chars, escapes, and nested block comments for languages that allow
+/// them. State updates are scalar; fixed CTFE classification values currently
+/// have backend-dependent backing storage, not an allocation-free guarantee.
+public func countBytes(bytes: []u8, syntax: ref language.Language): Stats {
+    let profile = syntax.scannerProfile()
+    if profile == 0 { return countBytesProfile<0>(bytes, syntax) }
+    if profile == 12 { return countBytesProfile<12>(bytes, syntax) }
+    if profile == 20 { return countBytesProfile<20>(bytes, syntax) }
+    if profile == 51 { return countBytesProfile<51>(bytes, syntax) }
+    if profile == 52 { return countBytesProfile<52>(bytes, syntax) }
+    // Language fields are public: unusual/custom combinations remain valid.
+    return countBytesProfile<128>(bytes, syntax)
+}
+
+func countBytesProfile<comptime PROFILE: uint>(bytes: []u8, syntax: ref language.Language): Stats {
+    let mut rustDocs = false
+    let mut rawStrings = false
+    let mut singleQuotes = false
+    let mut tripleQuotes = false
+    let mut blockComments = false
+    let mut nestedBlocks = false
+    comptime if PROFILE == 128 {
+        rustDocs = syntax.isRust()
+        rawStrings = syntax.rust_raw_strings
+        singleQuotes = syntax.single_quote_strings
+        tripleQuotes = syntax.triple_quote_strings
+        blockComments = syntax.has_block_comments
+        nestedBlocks = syntax.nested_blocks
+    } else {
+        rustDocs = comptime ((PROFILE & 1) != 0)
+        rawStrings = comptime ((PROFILE & 2) != 0)
+        singleQuotes = comptime ((PROFILE & 4) != 0)
+        tripleQuotes = comptime ((PROFILE & 8) != 0)
+        blockComments = comptime ((PROFILE & 16) != 0)
+        nestedBlocks = comptime ((PROFILE & 32) != 0)
+    }
+    // Cache configurable delimiter bytes once; custom configurations still work.
+    let lineCommentFirst = syntax.line_comment_first
+    let lineCommentSecond = syntax.line_comment_second
+    let lineCommentLen = syntax.line_comment_len
+    let blockStartFirst = syntax.block_start_first
+    let blockStartSecond = syntax.block_start_second
+    let blockEndFirst = syntax.block_end_first
+    let blockEndSecond = syntax.block_end_second
+    // Constructed by CTFE, not by a runtime loop. Keep this set narrower than
+    // ASCII whitespace: LF ends a line; form-feed and vertical-tab are code.
+    let horizontal = comptime ascii.byteSet(" \t\r")
+    let identifier = comptime ascii.byteSet("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+    let mut stats = zeroStats()
+    let totalLen = slice.len<u8>(bytes)
+    let mut i: usize = 0
+    let mut lineStart: usize = 0
+
+    let mut blockDepth: uint = 0
+    let mut inLineComment = false
+    let mut inString = false
+    let mut inRawString = false
+    let mut quote: u8 = 0
+    let mut quoteLength: usize = 0
+    let mut rawHashCount: usize = 0 as usize
+    let mut escaped = false
+    let mut inRustDocFence = false
+    let mut inPythonDocFence = false
+    let mut inOtherDocFence = false
+    let mut rustDocFenceChar: u8 = 0
+    let mut rustDocFenceLength: usize = 0 as usize
+
+    let mut hasNonWhitespace = false
+    let mut hasCode = false
+    let mut hasComment = false
+
+    while i < totalLen {
+        // Rust line documentation is Markdown, not ordinary `//` text. Strip
+        // the source prefix so blank doc lines stay blank and fenced examples
+        // can be scanned with the language named on the fence.
+        if i == lineStart && rustDocs && !inString && blockDepth == 0 {
+            let mut marker = lineStart
+            while marker < totalLen
+            && (bytes[marker] == 32 || bytes[marker] == 9 || bytes[marker] == 13) {
+                marker = marker + 1 as usize
+            }
+            let isDocLine = marker + 2 as usize < totalLen
+            && bytes[marker] == b'/'
+            && bytes[marker + 1 as usize] == b'/'
+            && (bytes[marker + 2 as usize] == b'/' || bytes[marker + 2 as usize] == b'!')
+            if isDocLine {
+                let mut content = marker + 3 as usize
+                while content < totalLen
+                && (bytes[content] == 32 || bytes[content] == 9 || bytes[content] == 13) {
+                    content = content + 1 as usize
+                }
+
+                if inRustDocFence || inPythonDocFence || inOtherDocFence {
+                    let mut fenceRun: usize = 0 as usize
+                    while content + fenceRun < totalLen
+                    && bytes[content + fenceRun] == rustDocFenceChar {
+                        fenceRun = fenceRun + 1 as usize
+                    }
+                    let mut trailing = content + fenceRun
+                    while trailing < totalLen
+                    && bytes[trailing] != 10
+                    && (bytes[trailing] == 32 || bytes[trailing] == 9 || bytes[trailing] == 13) {
+                        trailing = trailing + 1 as usize
+                    }
+                    if fenceRun >= rustDocFenceLength
+                    && (trailing >= totalLen || bytes[trailing] == 10) {
+                        inRustDocFence = false
+                        inPythonDocFence = false
+                        inOtherDocFence = false
+                        hasNonWhitespace = true
+                        hasComment = true
+                        i = trailing
+                        continue
+                    }
+                    if inPythonDocFence {
+                        let mut first = content
+                        while first < totalLen
+                        && bytes[first] != 10
+                        && (bytes[first] == 32 || bytes[first] == 9 || bytes[first] == 13) {
+                            first = first + 1 as usize
+                        }
+                        if first < totalLen && bytes[first] != 10 && bytes[first] == b'#' {
+                            hasNonWhitespace = true
+                            hasComment = true
+                            i = first
+                            while i < totalLen && bytes[i] != 10 {
+                                i = i + 1 as usize
+                            }
+                            continue
+                        }
+                        if first < totalLen && bytes[first] != 10 {
+                            hasNonWhitespace = true
+                            hasCode = true
+                        }
+                        i = first
+                        while i < totalLen && bytes[i] != 10 {
+                            i = i + 1 as usize
+                        }
+                        continue
+                    }
+                    if inOtherDocFence {
+                        let mut scanBody = content
+                        while scanBody < totalLen && bytes[scanBody] != 10 {
+                            if bytes[scanBody] != 32 && bytes[scanBody] != 9 && bytes[scanBody] != 13 {
+                                hasNonWhitespace = true
+                            }
+                            scanBody = scanBody + 1 as usize
+                        }
+                        if hasNonWhitespace {
+                            hasComment = true
+                        }
+                        i = scanBody
+                        continue
+                    }
+                    i = content
+                    continue
+                }
+
+                if content < totalLen && (bytes[content] == b'`' || bytes[content] == b'~') {
+                    let fenceChar = bytes[content]
+                    let mut fenceRun: usize = 0 as usize
+                    while content + fenceRun < totalLen
+                    && bytes[content + fenceRun] == fenceChar {
+                        fenceRun = fenceRun + 1 as usize
+                    }
+                    if fenceRun >= 3 as usize {
+                        let mut tagStart = content + fenceRun
+                        while tagStart < totalLen
+                        && bytes[tagStart] != 10
+                        && (bytes[tagStart] == 32 || bytes[tagStart] == 9 || bytes[tagStart] == 13) {
+                            tagStart = tagStart + 1 as usize
+                        }
+                        let mut tagEnd = tagStart
+                        while tagEnd < totalLen
+                        && bytes[tagEnd] != 10
+                        && bytes[tagEnd] != 32
+                        && bytes[tagEnd] != 9
+                        && bytes[tagEnd] != 13
+                        && bytes[tagEnd] != b',' {
+                            tagEnd = tagEnd + 1 as usize
+                        }
+                        inRustDocFence = language.isRustDocFence(bytes, tagStart, tagEnd)
+                        inPythonDocFence = language.isPythonDocFence(bytes, tagStart, tagEnd)
+                        inOtherDocFence = !inRustDocFence && !inPythonDocFence
+                        rustDocFenceChar = fenceChar
+                        rustDocFenceLength = fenceRun
+                        hasNonWhitespace = true
+                        hasComment = true
+                        i = tagEnd
+                        while i < totalLen && bytes[i] != 10 {
+                            i = i + 1 as usize
+                        }
+                        continue
+                    }
+                }
+
+                let mut hasDocBody = false
+                let mut scanDocBody = content
+                while scanDocBody < totalLen && bytes[scanDocBody] != 10 {
+                    if bytes[scanDocBody] != 32 && bytes[scanDocBody] != 9 && bytes[scanDocBody] != 13 {
+                        hasDocBody = true
+                    }
+                    scanDocBody = scanDocBody + 1 as usize
+                }
+                if hasDocBody {
+                    hasNonWhitespace = true
+                    hasComment = true
+                }
+                i = scanDocBody
+                continue
+            }
+            if inRustDocFence || inPythonDocFence || inOtherDocFence {
+                inRustDocFence = false
+                inPythonDocFence = false
+                inOtherDocFence = false
+            }
+        }
+
+        let current = bytes[i]
+        if current == 10 {
+            // A physical blank line inside a multiline token still belongs to
+            // that token: comment lines are comments and string lines are code.
+            if blockDepth > 0 {
+                hasNonWhitespace = true
+                hasComment = true
+            }
+            if inString {
+                hasNonWhitespace = true
+                hasCode = true
+            }
+            finishLine(stats, hasNonWhitespace, hasCode, hasComment)
+            i = i + 1
+            lineStart = i
+            inLineComment = false
+            escaped = false
+            hasNonWhitespace = false
+            hasCode = false
+            hasComment = false
+            continue
+        }
+
+        let isWs = horizontal.contains(current)
+        if !isWs {
+            hasNonWhitespace = true
+        }
+
+        if inLineComment {
+            hasComment = true
+            while i < totalLen {
+                let c = bytes[i]
+                if c == 10 {
+                    break
+                }
+                if c != 32 && c != 9 && c != 13 {
+                    hasNonWhitespace = true
+                }
+                i = i + 1
+            }
+            continue
+        }
+
+        if blockDepth > 0 {
+            // Even an all-whitespace line inside a block comment is a comment,
+            // not an empty source line.
+            hasNonWhitespace = true
+            hasComment = true
+            if i + 1 < totalLen
+            && current == blockEndFirst
+            && bytes[i + 1] == blockEndSecond {
+                blockDepth = blockDepth - 1
+                i = i + 2
+                continue
+            }
+            if nestedBlocks
+            && i + 1 < totalLen
+            && current == blockStartFirst
+            && bytes[i + 1] == blockStartSecond {
+                blockDepth = blockDepth + 1
+                i = i + 2
+                continue
+            }
+            i = i + 1
+            while i < totalLen {
+                let c = bytes[i]
+                if c == 10 || c == blockEndFirst || c == blockStartFirst {
+                    break
+                }
+                if c != 32 && c != 9 && c != 13 {
+                    hasNonWhitespace = true
+                }
+                i = i + 1
+            }
+            continue
+        }
+
+        if inString {
+            hasCode = true
+            hasNonWhitespace = true
+            if inRawString {
+                if current == quote {
+                    let mut matchedHashes: usize = 0 as usize
+                    while matchedHashes < rawHashCount
+                    && i + 1 + matchedHashes < totalLen
+                    && bytes[i + 1 + matchedHashes] == b'#' {
+                        matchedHashes = matchedHashes + 1 as usize
+                    }
+                    if matchedHashes == rawHashCount {
+                        inString = false
+                        inRawString = false
+                        i = i + 1 as usize + rawHashCount
+                        continue
+                    }
+                }
+                i = i + 1 as usize
+                continue
+            }
+            if escaped {
+                escaped = false
+                i = i + 1
+                continue
+            }
+            if current == 92 {
+                escaped = true
+                i = i + 1
+                continue
+            }
+            if current == quote {
+                if quoteLength == 1 as usize {
+                    inString = false
+                    i = i + 1 as usize
+                    continue
+                }
+                if i + 2 as usize < totalLen
+                && bytes[i + 1 as usize] == quote
+                && bytes[i + 2 as usize] == quote {
+                    inString = false
+                    i = i + 3 as usize
+                    continue
+                }
+            }
+            i = i + 1
+            while i < totalLen {
+                let c = bytes[i]
+                if c == 92 || c == quote || c == 10 {
+                    break
+                }
+                i = i + 1
+            }
+            continue
+        }
+
+        if isWs {
+            i = i + 1
+            while i < totalLen {
+                let c = bytes[i]
+                if horizontal.contains(c) {
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            continue
+        }
+
+        // Rust raw strings use r"...", r#"..."#, r##"..."##, and the
+        // byte-string form br#"..."#. Their closing quote must carry the
+        // same number of # markers as the opening delimiter.
+        if rawStrings && (current == b'r' || current == b'b') {
+            let mut prefixLength: usize = 0 as usize
+            if current == b'r' {
+                prefixLength = 1 as usize
+            } else if i + 1 as usize < totalLen && bytes[i + 1 as usize] == b'r' {
+                prefixLength = 2 as usize
+            }
+            if prefixLength > 0 as usize {
+                let mut marker = i + prefixLength
+                let mut hashCount: usize = 0 as usize
+                while marker < totalLen && bytes[marker] == b'#' {
+                    marker = marker + 1 as usize
+                    hashCount = hashCount + 1 as usize
+                }
+                if marker < totalLen && bytes[marker] == b'"' {
+                    hasCode = true
+                    inString = true
+                    inRawString = true
+                    quote = b'"'
+                    quoteLength = 1 as usize
+                    rawHashCount = hashCount
+                    escaped = false
+                    i = marker + 1 as usize
+                    continue
+                }
+            }
+        }
+
+        if identifier.contains(current) {
+            hasCode = true
+            i = i + 1
+            while i < totalLen {
+                let c = bytes[i]
+                if identifier.contains(c) {
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            continue
+        }
+
+        if current == 34 || (current == 39 && singleQuotes) {
+            hasCode = true
+            inString = true
+            quote = current
+            quoteLength = 1 as usize
+            if tripleQuotes
+            && i + 2 as usize < totalLen
+            && bytes[i + 1 as usize] == current
+            && bytes[i + 2 as usize] == current {
+                quoteLength = 3 as usize
+                i = i + 3 as usize
+                continue
+            }
+            i = i + 1
+            continue
+        }
+
+        if lineCommentLen > 0
+        && current == lineCommentFirst
+        && (lineCommentLen == 1
+        || (i + 1 < totalLen && bytes[i + 1] == lineCommentSecond)) {
+            hasComment = true
+            inLineComment = true
+            i = i + lineCommentLen
+            continue
+        }
+
+        if blockComments
+        && i + 1 < totalLen
+        && current == blockStartFirst
+        && bytes[i + 1] == blockStartSecond {
+            hasComment = true
+            blockDepth = 1
+            i = i + 2
+            continue
+        }
+
+        if !isWs {
+            hasCode = true
+        }
+        i = i + 1
+    }
+
+    if lineStart < totalLen {
+        finishLine(stats, hasNonWhitespace, hasCode, hasComment)
+    }
+    stats.files = 1
+    return stats
+}
