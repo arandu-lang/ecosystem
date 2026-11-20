@@ -1,0 +1,131 @@
+module tuba
+
+import io
+import std.env as env
+import std.fs as fs
+import std.alloc.vec as vec
+import std.core.slice as slice
+import std.time as time
+
+import self.lz as lz
+
+/// Writes `bytes` to `path`, replacing any existing content using `fs.writeBytes`.
+@Effects(FileWrite, Foreign)
+func writeAll(path: str, bytes: []u8): Result<bool, str> {
+    let .Ok(_) = fs.writeBytes(path, bytes) else {
+        return Result.Err("tuba: failed to write output file")
+    }
+    return Result.Ok(true)
+}
+
+@Effects(FileRead, FileWrite, Foreign)
+func doCompress(input_path: str, output_path: str): int {
+    let .Ok(content) = fs.readToBytes(input_path) else {
+        io.println("tuba: cannot read ${input_path}")
+        return 1
+    }
+    let src = content.asSlice()
+    let src_len = src.len
+    let mut state = lz.newState()
+    let mut out = vec.Vec.new<u8>()
+
+    // 4-byte magic "TUBA"
+    let magic = b"TUBA"
+    out.push(magic[0])
+    out.push(magic[1])
+    out.push(magic[2])
+    out.push(magic[3])
+
+    // 8-byte original size (little-endian u64)
+    let sz: u64 = src_len as u64
+    out.push((sz        & 0xff) as u8)
+    out.push(((sz >> 8)  & 0xff) as u8)
+    out.push(((sz >> 16) & 0xff) as u8)
+    out.push(((sz >> 24) & 0xff) as u8)
+    out.push(((sz >> 32) & 0xff) as u8)
+    out.push(((sz >> 40) & 0xff) as u8)
+    out.push(((sz >> 48) & 0xff) as u8)
+    out.push(((sz >> 56) & 0xff) as u8)
+
+    let t_start = time.Instant.now()
+    lz.compress(src, mut ref state, mut ref out)
+    let elapsed = time.Instant.now().durationSince(t_start).asMillis()
+
+    let out_slice = out.asSlice()
+    let out_len = out_slice.len
+
+    let .Ok(_) = writeAll(output_path, out_slice) else {
+        io.println("tuba: cannot write ${output_path}")
+        return 1
+    }
+    let ratio: usize = if src_len > 0 { (out_len * 100) / src_len } else { 100 }
+    io.println("compressed: ${src_len} -> ${out_len} bytes (${ratio}%) in ${elapsed} ms")
+    return 0
+}
+
+@Effects(FileRead, FileWrite, Foreign)
+func doDecompress(input_path: str, output_path: str): int {
+    let .Ok(content) = fs.readToBytes(input_path) else {
+        io.println("tuba: cannot read ${input_path}")
+        return 1
+    }
+    let src = content.asSlice()
+    let src_len = src.len
+
+    // Validate magic "TUBA"
+    if src_len < 12
+        || src[0] != b'T' || src[1] != b'U' || src[2] != b'B' || src[3] != b'A' {
+        io.println("tuba: not a tuba file: ${input_path}")
+        return 1
+    }
+    // Skip header (4 magic + 8 size = 12 bytes).
+    let .Some(compressed) = src.subslice(12, src_len - 12) else {
+        io.println("tuba: not a tuba file: ${input_path}")
+        return 1
+    }
+    let mut out = vec.Vec.new<u8>()
+
+    let t_start = time.Instant.now()
+    match lz.decompress(compressed, mut ref out) {
+        Ok(written) => {
+            let elapsed = time.Instant.now().durationSince(t_start).asMillis()
+            let out_slice = out.asSlice()
+            let .Ok(_) = writeAll(output_path, out_slice) else {
+                io.println("tuba: cannot write ${output_path}")
+                return 1
+            }
+            io.println("decompressed: ${written} bytes in ${elapsed} ms")
+        }
+        Err(msg) => {
+            io.println("tuba: decompression error: ${msg}")
+            return 1
+        }
+    }
+    return 0
+}
+
+@Effects(FileRead, FileWrite, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    if argc < 4 {
+        io.println("tuba — LZ block compressor")
+        io.println("")
+        io.println("Usage:")
+        io.println("  tuba compress   <input> <output>")
+        io.println("  tuba decompress <input> <output>")
+        return 1
+    }
+
+    let cmd = env.arg(1)
+    let input_path = env.arg(2)
+    let output_path = env.arg(3)
+
+    if cmd == "compress" {
+        return doCompress(input_path, output_path)
+    }
+    if cmd == "decompress" {
+        return doDecompress(input_path, output_path)
+    }
+    io.println("tuba: unknown command: ${cmd}")
+    return 1
+}

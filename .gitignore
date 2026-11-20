@@ -1,0 +1,16 @@
+# Build artifacts (root & subprojects)
+target/
+.arandu/
+
+# Secrets & environment
+.env
+.env.*
+*.pem
+*.key
+
+# Editor & OS
+.DS_Store
+.vscode/
+.idea/
+.claude/
+*.swp

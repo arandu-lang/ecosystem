@@ -1,0 +1,162 @@
+module curumim_tests
+
+import std.testing as testing
+import std.alloc.vec as vec
+import self.cpu as cpu
+import self.display as display
+import self.timers as timers
+import self.keypad as keypad
+
+@Test
+func cpu_initialization_and_fontset(): void {
+    let vm = cpu.newCpu()
+    testing.expect(vm.pc == 0x200, "PC must start at 0x200")
+    testing.expect(vm.indexReg == 0, "I must start at 0")
+
+    let memSlice = vm.memory.asSlice()
+    // Font '0' is at 0x050: 0xF0, 0x90, 0x90, 0x90, 0xF0
+    testing.expect(memSlice[0x050] == 0xF0, "Font 0 byte 0 failed")
+    testing.expect(memSlice[0x051] == 0x90, "Font 0 byte 1 failed")
+    testing.expect(memSlice[0x054] == 0xF0, "Font 0 byte 4 failed")
+
+    // Font 'F' is at 0x050 + 15 * 5 = 0x09B
+    testing.expect(memSlice[0x09B] == 0xF0, "Font F byte 0 failed")
+    testing.expect(memSlice[0x09F] == 0x80, "Font F byte 4 failed")
+}
+
+@Test
+func arithmetic_and_carry_flag(): void {
+    let mut vm = cpu.newCpu()
+    let mut prog = vec.Vec.new<u8>()
+    // 60FA: LD V0, 250
+    prog.push(0x60 as u8); prog.push(0xFA as u8)
+    // 610A: LD V1, 10
+    prog.push(0x61 as u8); prog.push(0x0A as u8)
+    // 8014: ADD V0, V1 (250 + 10 = 260 -> 4, carry = 1)
+    prog.push(0x80 as u8); prog.push(0x14 as u8)
+
+    let loaded = vm.loadRom(prog.asSlice())
+    testing.expect(loaded, "Failed to load ROM")
+
+    let step1 = vm.step()
+    testing.expect(step1, "step 1 failed")
+    testing.expect(vm.readV(0) == 250, "V0 should be 250")
+
+    let step2 = vm.step()
+    testing.expect(step2, "step 2 failed")
+    testing.expect(vm.readV(1) == 10, "V1 should be 10")
+
+    let step3 = vm.step()
+    testing.expect(step3, "step 3 failed")
+    testing.expect(vm.readV(0) == 4, "V0 should wrap to 4")
+    testing.expect(vm.readV(0xF) == 1, "VF carry flag should be 1")
+}
+
+@Test
+func subtraction_and_borrow_flag(): void {
+    let mut vm = cpu.newCpu()
+    let mut prog = vec.Vec.new<u8>()
+    // 6005: LD V0, 5
+    prog.push(0x60 as u8); prog.push(0x05 as u8)
+    // 610A: LD V1, 10
+    prog.push(0x61 as u8); prog.push(0x0A as u8)
+    // 8015: SUB V0, V1 (5 - 10 = -5 -> 251, borrow -> VF = 0)
+    prog.push(0x80 as u8); prog.push(0x15 as u8)
+    // 6214: LD V2, 20
+    prog.push(0x62 as u8); prog.push(0x14 as u8)
+    // 6308: LD V3, 8
+    prog.push(0x63 as u8); prog.push(0x08 as u8)
+    // 8235: SUB V2, V3 (20 - 8 = 12, no borrow -> VF = 1)
+    prog.push(0x82 as u8); prog.push(0x35 as u8)
+
+    vm.loadRom(prog.asSlice())
+
+    vm.step() // V0 = 5
+    vm.step() // V1 = 10
+    vm.step() // V0 = 251, VF = 0
+    testing.expect(vm.readV(0) == 251, "V0 should be 251")
+    testing.expect(vm.readV(0xF) == 0, "VF should be 0 on borrow")
+
+    vm.step() // V2 = 20
+    vm.step() // V3 = 8
+    vm.step() // V2 = 12, VF = 1
+    testing.expect(vm.readV(2) == 12, "V2 should be 12")
+    testing.expect(vm.readV(0xF) == 1, "VF should be 1 on no borrow")
+}
+
+@Test
+func subroutine_call_and_return(): void {
+    let mut vm = cpu.newCpu()
+    let mut prog = vec.Vec.new<u8>()
+    // 0x200: 2206 (CALL 0x206)
+    prog.push(0x22 as u8); prog.push(0x06 as u8)
+    // 0x202: 612A (LD V1, 42)
+    prog.push(0x61 as u8); prog.push(0x2A as u8)
+    // 0x204: 1204 (JP 0x204 - halt)
+    prog.push(0x12 as u8); prog.push(0x04 as u8)
+    // 0x206: 6007 (LD V0, 7) - subroutine target
+    prog.push(0x60 as u8); prog.push(0x07 as u8)
+    // 0x208: 00EE (RET)
+    prog.push(0x00 as u8); prog.push(0xEE as u8)
+
+    vm.loadRom(prog.asSlice())
+
+    vm.step() // CALL 0x206
+    testing.expect(vm.pc == 0x206, "PC should jump to 0x206")
+    testing.expect(vm.stack.len() == 1, "Stack length should be 1")
+    testing.expect(vm.stack.asSlice()[0] == 0x202, "Return address should be 0x202")
+
+    vm.step() // LD V0, 7
+    testing.expect(vm.readV(0) == 7, "V0 should be 7")
+
+    vm.step() // RET
+    testing.expect(vm.pc == 0x202, "PC should return to 0x202")
+    testing.expect(vm.stack.len() == 0, "Stack should be empty")
+
+    vm.step() // LD V1, 42
+    testing.expect(vm.readV(1) == 42, "V1 should be 42")
+}
+
+@Test
+func bcd_encoding(): void {
+    let mut vm = cpu.newCpu()
+    let mut prog = vec.Vec.new<u8>()
+    // 60E9: LD V0, 233
+    prog.push(0x60 as u8); prog.push(0xE9 as u8)
+    // A300: LD I, 0x300
+    prog.push(0xA3 as u8); prog.push(0x00 as u8)
+    // F033: LD B, V0
+    prog.push(0xF0 as u8); prog.push(0x33 as u8)
+
+    vm.loadRom(prog.asSlice())
+
+    vm.step()
+    vm.step()
+    vm.step()
+
+    let memSlice = vm.memory.asSlice()
+    testing.expect(memSlice[0x300] == 2, "Hundreds digit should be 2")
+    testing.expect(memSlice[0x301] == 3, "Tens digit should be 3")
+    testing.expect(memSlice[0x302] == 3, "Units digit should be 3")
+}
+
+@Test
+func display_sprite_drawing_and_collision(): void {
+    let mut disp = display.newDisplay()
+    let mut sprite = vec.Vec.new<u8>()
+    sprite.push(0b11110000 as u8)
+    sprite.push(0b00001111 as u8)
+
+    // First draw: no collision
+    let col1 = disp.drawSprite(0, 0, sprite.asSlice())
+    testing.expect(!col1, "First draw should have no collision")
+    testing.expect(disp.getPixel(0, 0) == 1, "Pixel (0,0) should be 1")
+    testing.expect(disp.getPixel(4, 0) == 0, "Pixel (4,0) should be 0")
+    testing.expect(disp.getPixel(4, 1) == 1, "Pixel (4,1) should be 1")
+
+    // Second draw at same location: XOR erases pixels -> collision is true
+    let col2 = disp.drawSprite(0, 0, sprite.asSlice())
+    testing.expect(col2, "Second draw should trigger collision")
+    testing.expect(disp.getPixel(0, 0) == 0, "Pixel (0,0) should be erased back to 0")
+    testing.expect(disp.getPixel(4, 1) == 0, "Pixel (4,1) should be erased back to 0")
+}

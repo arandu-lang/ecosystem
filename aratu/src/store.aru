@@ -1,0 +1,427 @@
+module store
+
+import io
+import std.fs as fs
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+
+from self.log import { RecordType }
+import self.log as log
+import self.search as search
+
+public struct Store {
+    public path: ownedStrings.String
+    public index: vec.Vec<search.IndexEntry>
+    public file_size: u64
+}
+
+/// Writes `bytes` to `path` (replacing its contents) using the capability-based
+/// `std.fs.Dir` API.
+@Effects(FileWrite, Foreign)
+func writeFileBytes(path: str, bytes: []u8): Result<bool, str> {
+    match fs.Dir.open(".") {
+        Ok(mut dir) => {
+            let opts = fs.OpenOptions.writeOnly()
+            match dir.openFile(path, opts) {
+                Ok(mut f) => {
+                    let n = slice.len<u8>(bytes)
+                    if n == 0 {
+                        f.close()
+                        dir.close()
+                        return Result.Ok(true)
+                    }
+                    let mut written: usize = 0
+                    while written < n {
+                        match slice.subslice<u8>(bytes, written, n - written) {
+                            Option.Some(rem) => {
+                                let w = f.write(slice.asPtr<u8>(rem), slice.len<u8>(rem))
+                                if w <= 0 {
+                                    f.close()
+                                    dir.close()
+                                    return Result.Err("aratu: short or failed write to log file")
+                                }
+                                written = written + (w as usize)
+                            }
+                            Option.None => {
+                                break
+                            }
+                        }
+                    }
+                    f.close()
+                    dir.close()
+                    return Result.Ok(true)
+                }
+                Err(_) => {
+                    dir.close()
+                    return Result.Err("aratu: failed to open log file for writing")
+                }
+            }
+        }
+        Err(_) => {
+            return Result.Err("aratu: failed to open base directory capability")
+        }
+    }
+}
+
+/// Appends `bytes` to the log file at `path`.
+@Effects(FileRead, FileWrite, Foreign)
+func appendAll(path: str, bytes: []u8): Result<bool, str> {
+    let mut combined = vec.Vec.new<u8>()
+    if fs.fileExists(path) {
+        match fs.readToBytes(path) {
+            Ok(existing) => {
+                let s = existing.asSlice()
+                let elen = slice.len<u8>(s)
+                let mut i: usize = 0
+                while i < elen {
+                    combined.push(s[i])
+                    i = i + 1
+                }
+            }
+            Err(_) => {
+                return Result.Err("aratu: failed to read existing log before append")
+            }
+        }
+    }
+    let blen = slice.len<u8>(bytes)
+    let mut j: usize = 0
+    while j < blen {
+        combined.push(bytes[j])
+        j = j + 1
+    }
+    return writeFileBytes(path, combined.asSlice())
+}
+
+/// Returns true when the entry at `i` is a tombstone.
+func entryIsDeleted(v: ref vec.Vec<search.IndexEntry>, i: usize): bool {
+    let mut deleted = true
+    match v.get(i) {
+        Some(e) => {
+            deleted = e.deleted
+        }
+        None => {}
+    }
+    return deleted
+}
+
+/// Inserts `entry` at `pos`, shifting the tail right.
+///
+/// `Vec` has no `insert`, so the tail is moved out with `pop` (which yields
+/// owned elements), the new entry is placed at `pos`, and the tail is then
+/// restored in order from the temporary buffer.
+func insertEntry(v: mut ref vec.Vec<search.IndexEntry>, pos: usize, entry: search.IndexEntry): void {
+    let mut tail = vec.Vec.new<search.IndexEntry>()
+    while v.len() > pos {
+        match v.pop() {
+            Some(x) => {
+                tail.push(x)
+            }
+            None => {}
+        }
+    }
+    v.push(entry)
+    while tail.len() > 0 {
+        match tail.pop() {
+            Some(x) => {
+                v.push(x)
+            }
+            None => {}
+        }
+    }
+}
+
+/// Open an existing store or initialize a new one.
+@Effects(FileRead, Foreign)
+public func openStore(path_str: str): Result<Store, str> {
+    let mut entries = vec.Vec.new<search.IndexEntry>()
+    let mut current_size: u64 = 0
+
+    if fs.fileExists(path_str) {
+        match fs.readToBytes(path_str) {
+            Ok(content) => {
+                let bytes = content.asSlice()
+                let total_len = slice.len<u8>(bytes)
+                current_size = total_len as u64
+                let mut offset: usize = 0
+
+                while offset < total_len {
+                    let rlen = log.recordLen(bytes, offset)
+                    if rlen == 0 || offset + rlen > total_len {
+                        break
+                    }
+
+                    match log.readRecord(bytes, offset) {
+                        Ok(mut rec) => {
+                            let key_str = rec.key.asStr()
+                            let mut is_del = false
+                            if rec.kind is RecordType.Delete {
+                                is_del = true
+                            }
+
+                            let mut existing_at: usize = 0
+                            let mut existed = false
+                            match search.binarySearch(entries.asSlice(), key_str) {
+                                Some(idx) => {
+                                    existed = true
+                                    existing_at = idx
+                                }
+                                None => {}
+                            }
+
+                            if existed {
+                                // Update existing entry
+                                let updated = search.IndexEntry {
+                                    key: ownedStrings.String.from(key_str),
+                                    offset: offset as u64,
+                                    deleted: is_del,
+                                }
+                                entries.set(existing_at, updated)
+                            } else {
+                                // Insert at ordered position
+                                let insert_pos = search.searchInsertionPoint(entries.asSlice(), key_str)
+                                let new_entry = search.IndexEntry {
+                                    key: ownedStrings.String.from(key_str),
+                                    offset: offset as u64,
+                                    deleted: is_del,
+                                }
+                                insertEntry(mut ref entries, insert_pos, new_entry)
+                            }
+                        }
+                        Err(e) => {
+                            io.println("aratu: warn: corrupted record at offset ${offset}: ${e}")
+                            break
+                        }
+                    }
+                    offset = offset + rlen
+                }
+            }
+            Err(_) => {
+                return Result.Err("could not open log file")
+            }
+        }
+    }
+
+    let s = Store {
+        path: ownedStrings.String.from(path_str),
+        index: entries,
+        file_size: current_size,
+    }
+    return Result.Ok(s)
+}
+
+/// Store a key-value pair.
+@Effects(FileRead, FileWrite, Foreign)
+public func Store.put(self: mut ref Store, key: str, value: str): Result<bool, str> {
+    let mut rec = log.Record {
+        kind: log.RecordType.Put,
+        key: ownedStrings.String.from(key),
+        value: ownedStrings.String.from(value),
+    }
+
+    let mut buf = vec.Vec.new<u8>()
+    log.encodeRecord(ref rec, mut ref buf)
+    let encoded_bytes = buf.asSlice()
+    let write_offset = self.file_size
+
+    match appendAll(self.path.asStr(), encoded_bytes) {
+        Ok(_) => {
+            self.file_size = write_offset + slice.len<u8>(encoded_bytes) as u64
+            let mut existing_at: usize = 0
+            let mut existed = false
+            match search.binarySearch(self.index.asSlice(), key) {
+                Some(idx) => {
+                    existed = true
+                    existing_at = idx
+                }
+                None => {}
+            }
+
+            if existed {
+                let updated = search.IndexEntry {
+                    key: ownedStrings.String.from(key),
+                    offset: write_offset,
+                    deleted: false,
+                }
+                self.index.set(existing_at, updated)
+            } else {
+                let insert_pos = search.searchInsertionPoint(self.index.asSlice(), key)
+                let new_entry = search.IndexEntry {
+                    key: ownedStrings.String.from(key),
+                    offset: write_offset,
+                    deleted: false,
+                }
+                insertEntry(mut ref self.index, insert_pos, new_entry)
+            }
+            return Result.Ok(true)
+        }
+        Err(_) => {
+            return Result.Err("failed to append record to log")
+        }
+    }
+}
+
+/// Retrieve the value associated with a key.
+@Effects(FileRead, Foreign)
+public func Store.get(self: ref Store, key: str): Result<ownedStrings.String, str> {
+    match search.binarySearch(self.index.asSlice(), key) {
+        Some(idx) => {
+            if entryIsDeleted(ref self.index, idx) {
+                return Result.Err("key not found (deleted)")
+            }
+
+            let mut read_off: usize = 0
+            match self.index.get(idx) {
+                Some(e) => {
+                    read_off = e.offset as usize
+                }
+                None => {}
+            }
+
+            match fs.readToBytes(self.path.asStr()) {
+                Ok(content) => {
+                    let bytes = content.asSlice()
+                    match log.readRecord(bytes, read_off) {
+                        Ok(mut rec) => {
+                            let val = ownedStrings.String.from(rec.value.asStr())
+                            return Result.Ok(val)
+                        }
+                        Err(e) => {
+                            return Result.Err(e)
+                        }
+                    }
+                }
+                Err(_) => {
+                    return Result.Err("failed to read log file")
+                }
+            }
+        }
+        None => {
+            return Result.Err("key not found")
+        }
+    }
+}
+
+/// Delete a key (appends a tombstone).
+@Effects(FileRead, FileWrite, Foreign)
+public func Store.del(self: mut ref Store, key: str): Result<bool, str> {
+    match search.binarySearch(self.index.asSlice(), key) {
+        Some(idx) => {
+            if entryIsDeleted(ref self.index, idx) {
+                return Result.Err("key already deleted")
+            }
+
+            let mut rec = log.Record {
+                kind: log.RecordType.Delete,
+                key: ownedStrings.String.from(key),
+                value: ownedStrings.String.from(""),
+            }
+
+            let mut buf = vec.Vec.new<u8>()
+            log.encodeRecord(ref rec, mut ref buf)
+            let encoded_bytes = buf.asSlice()
+            let write_offset = self.file_size
+
+            match appendAll(self.path.asStr(), encoded_bytes) {
+                Ok(_) => {
+                    self.file_size = write_offset + slice.len<u8>(encoded_bytes) as u64
+                    let updated = search.IndexEntry {
+                        key: ownedStrings.String.from(key),
+                        offset: write_offset,
+                        deleted: true,
+                    }
+                    self.index.set(idx, updated)
+                    return Result.Ok(true)
+                }
+                Err(_) => {
+                    return Result.Err("failed to append tombstone to log")
+                }
+            }
+        }
+        None => {
+            return Result.Err("key not found")
+        }
+    }
+}
+
+/// Print all active keys.
+public func Store.list(self: ref Store): void {
+    let mut i: usize = 0
+    let n = self.index.len()
+    let mut count: usize = 0
+    while i < n {
+        match self.index.get(i) {
+            Some(e) => {
+                if !e.deleted {
+                    io.println("${e.key.asStr()}")
+                    count = count + 1
+                }
+            }
+            None => {}
+        }
+        i = i + 1
+    }
+    io.println("Total live keys: ${count}")
+}
+
+/// Compacts the append-only log by rewriting only active (non-deleted) records
+/// and updating all in-memory index offsets, eliminating tombstones and stale versions.
+@Effects(FileRead, FileWrite, Foreign)
+public func Store.compact(self: mut ref Store): Result<usize, str> {
+    if !fs.fileExists(self.path.asStr()) {
+        return Result.Ok(0)
+    }
+
+    match fs.readToBytes(self.path.asStr()) {
+        Ok(content) => {
+            let old_bytes = content.asSlice()
+            let mut new_log = vec.Vec.new<u8>()
+            let mut new_index = vec.Vec.new<search.IndexEntry>()
+            let mut live_count: usize = 0
+
+            let n = self.index.len()
+            let mut i: usize = 0
+            while i < n {
+                match self.index.get(i) {
+                    Some(e) => {
+                        if !e.deleted {
+                            match log.readRecord(old_bytes, e.offset as usize) {
+                                Ok(rec) => {
+                                    let new_offset = new_log.len() as u64
+                                    log.encodeRecord(ref rec, mut ref new_log)
+                                    let entry = search.IndexEntry {
+                                        key: ownedStrings.String.from(e.key.asStr()),
+                                        offset: new_offset,
+                                        deleted: false,
+                                    }
+                                    new_index.push(entry)
+                                    live_count = live_count + 1
+                                }
+                                Err(err) => {
+                                    return Result.Err(err)
+                                }
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                i = i + 1
+            }
+
+            let new_slice = new_log.asSlice()
+            match writeFileBytes(self.path.asStr(), new_slice) {
+                Ok(_) => {
+                    self.file_size = slice.len<u8>(new_slice) as u64
+                    self.index = new_index
+                    return Result.Ok(live_count)
+                }
+                Err(err) => {
+                    return Result.Err(err)
+                }
+            }
+        }
+        Err(_) => {
+            return Result.Err("failed to read log file for compaction")
+        }
+    }
+}

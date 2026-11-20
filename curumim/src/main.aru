@@ -1,0 +1,234 @@
+module curumim
+
+import io
+import std.env as env
+import std.fs as fs
+import std.thread as thread
+import std.alloc.vec as vec
+import std.core.slice as slice
+import std.core.intrinsics as intrinsics
+import std.core.num as num
+
+import self.cpu as cpu
+import self.keypad as keypad
+import self.roms as roms
+
+extern "C" {
+    func system(cmd: ptr[u8]): int
+    func read(fd: int, buf: ptr[u8], count: usize): isize
+}
+
+func execSys(cmd: str): void {
+    let bytes = intrinsics.strBytes(cmd)
+    unsafe {
+        system(slice.asPtr<u8>(bytes))
+    }
+    return
+}
+
+@Effects(FileRead, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+
+    let mut selectedTheme: usize = 0 // 0: Green, 1: Amber, 2: Cyan
+    let mut maxFrames: usize = 0 // 0 = unlimited
+    let mut cyclesPerFrame: usize = 11 // ~660 Hz at 60 FPS
+    let mut romChoice = "maze"
+    let mut customRomPath = ""
+    let mut isHeadless = false
+
+    let mut argIdx: int = 1
+    while argIdx < argc {
+        let arg = env.arg(argIdx)
+        if arg == "--theme" {
+            argIdx = argIdx + 1
+            if argIdx < argc {
+                let themeName = env.arg(argIdx)
+                if themeName == "amber" {
+                    selectedTheme = 1
+                } else if themeName == "cyan" {
+                    selectedTheme = 2
+                } else {
+                    selectedTheme = 0
+                }
+            }
+        } else if arg == "--frames" {
+            argIdx = argIdx + 1
+            if argIdx < argc {
+                maxFrames = num.parseUsize(env.arg(argIdx)) ?? maxFrames
+            }
+        } else if arg == "--demo" {
+            argIdx = argIdx + 1
+            if argIdx < argc {
+                romChoice = env.arg(argIdx)
+            }
+        } else if arg == "--speed" {
+            argIdx = argIdx + 1
+            if argIdx < argc {
+                let speedStr = env.arg(argIdx)
+                if speedStr == "fast" {
+                    cyclesPerFrame = 25
+                } else if speedStr == "slow" {
+                    cyclesPerFrame = 5
+                }
+            }
+        } else if arg == "--headless" {
+            isHeadless = true
+        } else if arg == "--help" || arg == "-h" {
+            io.println("curumim — Retro CHIP-8 Fantasy Console in Arandu")
+            io.println("")
+            io.println("Usage:")
+            io.println("  curumim [options] [path/to/rom.ch8]")
+            io.println("")
+            io.println("Controls:")
+            io.println("  Left / Right   Move block (◄ ► or A / D or Q / E)")
+            io.println("  Up             Rotate block (▲ or W)")
+            io.println("  Down           Soft drop (▼ or S)")
+            io.println("  Space / Enter  Start game / Drop")
+            io.println("  ESC / Q        Quit curumim")
+            io.println("")
+            io.println("Options:")
+            io.println("  --demo <maze|ibm>       Run built-in classic demo ROM (default: maze)")
+            io.println("  --theme <green|amber|cyan>  Select ANSI Truecolor phosphor theme")
+            io.println("  --frames <count>        Exit after running N frames (e.g. 60, 120)")
+            io.println("  --speed <slow|fast>     Adjust CPU cycles per 60Hz frame")
+            io.println("  --headless              Run without terminal drawing (benchmarking)")
+            return 0
+        } else {
+            customRomPath = arg
+        }
+        argIdx = argIdx + 1
+    }
+
+    let mut vm = cpu.newCpu()
+
+    let mut romLoaded = false
+    if customRomPath != "" {
+        match fs.readToBytes(customRomPath) {
+            Ok(fileContent) => {
+                romLoaded = vm.loadRom(fileContent.asSlice())
+            }
+            Err(err) => {
+                io.println("Error reading ROM file: ${customRomPath}")
+                return 1
+            }
+        }
+    } else {
+        if romChoice == "ibm" {
+            let ibmRom = roms.getIbmLogoRom()
+            romLoaded = vm.loadRom(ibmRom.asSlice())
+        } else {
+            let mazeRom = roms.getMazeRom()
+            romLoaded = vm.loadRom(mazeRom.asSlice())
+        }
+    }
+
+    if !romLoaded {
+        io.println("Failed to load ROM into virtual machine memory.")
+        return 1
+    }
+
+    if !isHeadless {
+        // Set raw terminal mode (non-canonical, no echo, non-blocking 0 timeout)
+        execSys("stty -icanon -echo min 0 time 0 2>/dev/null\0")
+        // Clear screen and hide cursor
+        io.print("\u{1b}[2J\u{1b}[?25l")
+    }
+
+    let mut frameCount: usize = 0
+    let mut running = true
+    let mut keyHoldFrames: usize = 0
+
+    while running {
+        if !isHeadless {
+            let mut inBuf = vec.Vec.new<u8>()
+            inBuf.push(0 as u8)
+            inBuf.push(0 as u8)
+            inBuf.push(0 as u8)
+            inBuf.push(0 as u8)
+            let inSlice = inBuf.asSlice()
+            let n = unsafe {
+                read(0, slice.asPtr<u8>(inSlice), 4)
+            }
+
+            if n > 0 {
+                let b0 = inSlice[0]
+                if b0 == 27 {
+                    if n >= 3 && inSlice[1] == 91 {
+                        let arrowCode = inSlice[2]
+                        if arrowCode == 65 { // Up arrow -> Rotate (Key 4)
+                            vm.keys.setKeyDown(4 as u8)
+                            keyHoldFrames = 6
+                        } else if arrowCode == 66 { // Down arrow -> Soft Drop (Key 7)
+                            vm.keys.setKeyDown(7 as u8)
+                            keyHoldFrames = 6
+                        } else if arrowCode == 67 { // Right arrow -> Move right (Key 6)
+                            vm.keys.setKeyDown(6 as u8)
+                            keyHoldFrames = 6
+                        } else if arrowCode == 68 { // Left arrow -> Move left (Key 5)
+                            vm.keys.setKeyDown(5 as u8)
+                            keyHoldFrames = 6
+                        }
+                    } else {
+                        // ESC key alone -> exit
+                        running = false
+                    }
+                } else if b0 == 3 { // Ctrl+C
+                    running = false
+                } else {
+                    match keypad.mapCharToChip8(b0) {
+                        Some(chipKey) => {
+                            vm.keys.setKeyDown(chipKey)
+                            keyHoldFrames = 6
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+
+        // Run batch of CPU instructions for this frame
+        let mut cycle: usize = 0
+        while cycle < cyclesPerFrame {
+            if !vm.step() {
+                running = false
+                cycle = cyclesPerFrame
+            } else {
+                cycle = cycle + 1
+            }
+        }
+
+        // Decay held keys over a natural human keypress window
+        if keyHoldFrames > 0 {
+            keyHoldFrames = keyHoldFrames - 1
+            if keyHoldFrames == 0 {
+                vm.keys.clear()
+            }
+        }
+
+        // Tick 60 Hz timers once per frame
+        let soundActive = vm.tm.tick()
+
+        frameCount = frameCount + 1
+
+        if !isHeadless {
+            vm.disp.renderToTerminal(selectedTheme, 60 as u32, vm.totalCycles, vm.pc)
+            // Sleep ~16ms to maintain 60 FPS
+            thread.sleep(16 as u64)
+        }
+
+        if maxFrames > 0 && frameCount >= maxFrames {
+            running = false
+        }
+    }
+
+    if !isHeadless {
+        // Restore terminal to normal mode and restore cursor
+        execSys("stty sane 2>/dev/null\0")
+        io.print("\u{1b}[?25h")
+        io.println("")
+        io.println("curumim emulation session finished (${frameCount} frames, ${vm.totalCycles} cycles).")
+    }
+
+    return 0
+}

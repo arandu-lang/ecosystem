@@ -1,0 +1,147 @@
+module renderer
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+import self.ast as ast
+from self.ast import { NodeKind }
+import self.context as context
+import self.filters as filters
+import self.value as value
+
+/// Compares two string slices for equality.
+func strEquals(a: str, b: str): bool {
+    return a == b
+}
+
+/// Recursively renders a single AST node into the output byte vector.
+public func renderNode(
+    nodeIdx: usize,
+    templateAst: ref ast.TemplateAst,
+    src: []u8,
+    ctx: mut ref context.Context,
+    out: mut ref vec.Vec<u8>,
+): void {
+    let nodesSlice = templateAst.nodes.asSlice()
+    let node = ref nodesSlice[nodeIdx]
+
+    match node.kind {
+        NodeKind.Literal => {
+            let mut i: usize = 0
+            while i < node.textLen {
+                out.push(src[node.textStart + i])
+                i = i + 1
+            }
+        }
+        NodeKind.Variable => {
+            let mut val = context.getVar(ctx, node.varName.asStr())
+
+            // Check if default fallback applies
+            if (value.isNull(ref val) || (value.isStr(ref val) && val.strVal.len() == 0)) && node.defaultVal.len() > 0 {
+                val = value.newStr(node.defaultVal.asStr())
+            }
+
+            let mut rawBytes = vec.Vec.new<u8>()
+            value.renderRaw(ref val, mut ref rawBytes)
+
+            // Apply optional filter transformation
+            let filterName = node.filterName.asStr()
+            let mut transformed = vec.Vec.new<u8>()
+
+            if strEquals(filterName, "upper") {
+                filters.filterUpper(rawBytes.asSlice(), mut ref transformed)
+            } else if strEquals(filterName, "lower") {
+                filters.filterLower(rawBytes.asSlice(), mut ref transformed)
+            } else if strEquals(filterName, "trim") {
+                filters.filterTrim(rawBytes.asSlice(), mut ref transformed)
+            } else {
+                let n = rawBytes.len()
+                let mut i: usize = 0
+                while i < n {
+                    transformed.push(rawBytes.asSlice()[i])
+                    i = i + 1
+                }
+            }
+
+            // Auto-escape HTML unless `| raw` was explicitly requested
+            if node.isRaw {
+                let n = transformed.len()
+                let mut i: usize = 0
+                while i < n {
+                    out.push(transformed.asSlice()[i])
+                    i = i + 1
+                }
+            } else {
+                filters.escapeHtml(transformed.asSlice(), out)
+            }
+        }
+        NodeKind.IfBlock => {
+            let condVal = context.getVar(ctx, node.varName.asStr())
+            let mut truthy = value.isTruthy(ref condVal)
+            if node.isNegated {
+                truthy = !truthy
+            }
+
+            if truthy {
+                let childrenSlice = templateAst.childIndices.asSlice()
+                let mut i: usize = 0
+                while i < node.thenCount {
+                    let childIdx = childrenSlice[node.thenStart + i]
+                    renderNode(childIdx, templateAst, src, ctx, out)
+                    i = i + 1
+                }
+            } else {
+                let childrenSlice = templateAst.childIndices.asSlice()
+                let mut i: usize = 0
+                while i < node.elseCount {
+                    let childIdx = childrenSlice[node.elseStart + i]
+                    renderNode(childIdx, templateAst, src, ctx, out)
+                    i = i + 1
+                }
+            }
+        }
+        NodeKind.ForLoop => {
+            let collVal = context.getVar(ctx, node.collectionVar.asStr())
+            if value.isList(ref collVal) {
+                let listSlice = collVal.listVal.asSlice()
+                let childrenSlice = templateAst.childIndices.asSlice()
+                let numItems = collVal.listVal.len()
+                let mut itemIdx: usize = 0
+                while itemIdx < numItems {
+                    let itemRef = ref listSlice[itemIdx]
+                    let itemStr = itemRef.asStr()
+                    context.setStr(ctx, node.iterVar.asStr(), itemStr)
+                    context.setInt(ctx, "loop.index", (itemIdx + 1) as i64)
+                    context.setInt(ctx, "loop.index0", itemIdx as i64)
+
+                    let mut i: usize = 0
+                    while i < node.bodyCount {
+                        let childIdx = childrenSlice[node.bodyStart + i]
+                        renderNode(childIdx, templateAst, src, ctx, out)
+                        i = i + 1
+                    }
+
+                    itemIdx = itemIdx + 1
+                }
+            }
+        }
+    }
+    return
+}
+
+/// Evaluates an entire compiled template against a context, returning rendered bytes.
+public func renderTemplate(
+    templateAst: ref ast.TemplateAst,
+    src: []u8,
+    ctx: mut ref context.Context,
+): vec.Vec<u8> {
+    let mut out = vec.Vec.new<u8>()
+    let rootSlice = templateAst.rootIndices.asSlice()
+    let numRoots = templateAst.rootIndices.len()
+    let mut i: usize = 0
+    while i < numRoots {
+        let rootIdx = rootSlice[i]
+        renderNode(rootIdx, templateAst, src, ctx, mut ref out)
+        i = i + 1
+    }
+    return out
+}

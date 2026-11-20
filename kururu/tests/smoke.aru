@@ -1,0 +1,79 @@
+module kururu_tests
+
+import std.testing as testing
+import self.math as math
+import self.tracer as tracer
+import self.scene as scene
+
+@Test
+func vec3_dot_product(): void {
+    let a = math.vec3(1.0, 2.0, 3.0)
+    let b = math.vec3(4.0, -5.0, 6.0)
+    // 1*4 + 2*(-5) + 3*6 = 4 - 10 + 18 = 12
+    let d = a.dot(b)
+    testing.expect(d > 11.99 && d < 12.01, "dot product of [1,2,3] and [4,-5,6] must be 12")
+}
+
+@Test
+func vec3_normalize_produces_unit_vector(): void {
+    let v = math.vec3(3.0, 0.0, 4.0)
+    let n = v.normalize()
+    let len = n.length()
+    testing.expect(len > 0.99 && len < 1.01, "normalized vector length must be ~1.0")
+    testing.expect(n.x > 0.59 && n.x < 0.61, "normalized x must be 0.6")
+    testing.expect(n.z > 0.79 && n.z < 0.81, "normalized z must be 0.8")
+}
+
+@Test
+func ray_sphere_intersection_hit(): void {
+    let r = tracer.Ray {
+        origin: math.vec3(0.0, 0.0, -5.0),
+        direction: math.vec3(0.0, 0.0, 1.0),
+    }
+    let s = tracer.Sphere {
+        center: math.vec3(0.0, 0.0, 0.0),
+        radius: 1.0,
+        color: math.vec3(1.0, 0.0, 0.0),
+        shininess: 10.0,
+        reflectivity: 0.0,
+    }
+    let t = tracer.raySphereIntersect(ref r, ref s)
+    // Ray starts at z = -5, sphere at z = 0 with radius 1, so hit is at z = -1, t = 4.0
+    testing.expect(t > 3.99 && t < 4.01, "expected intersection at t = 4.0")
+}
+
+@Test
+func ray_sphere_intersection_miss(): void {
+    let r = tracer.Ray {
+        origin: math.vec3(0.0, 5.0, -5.0),
+        direction: math.vec3(0.0, 0.0, 1.0),
+    }
+    let s = tracer.Sphere {
+        center: math.vec3(0.0, 0.0, 0.0),
+        radius: 1.0,
+        color: math.vec3(1.0, 0.0, 0.0),
+        shininess: 10.0,
+        reflectivity: 0.0,
+    }
+    let t = tracer.raySphereIntersect(ref r, ref s)
+    testing.expect(t < 0.0, "expected miss (negative t)")
+}
+
+@Test
+func vec3_simd_operations_match_scalar(): void {
+    let a = math.vec3(1.5, -2.0, 4.0)
+    let b = math.vec3(2.0, 3.0, 0.5)
+    let d_scalar = a.dot(b)
+    let d_simd = a.dotSimd(b)
+    let diff = if d_scalar >= d_simd { d_scalar - d_simd } else { d_simd - d_scalar }
+    testing.expect(diff < 0.0001, "dotSimd must match scalar dot")
+
+    let sum_s = a.addSimd(b)
+    testing.expect(sum_s.x > 3.49 && sum_s.x < 3.51, "addSimd.x mismatch")
+    testing.expect(sum_s.y > 0.99 && sum_s.y < 1.01, "addSimd.y mismatch")
+    testing.expect(sum_s.z > 4.49 && sum_s.z < 4.51, "addSimd.z mismatch")
+
+    let scaled = a.scaleSimd(2.0)
+    testing.expect(scaled.x > 2.99 && scaled.x < 3.01, "scaleSimd.x mismatch")
+    testing.expect(scaled.z > 7.99 && scaled.z < 8.01, "scaleSimd.z mismatch")
+}

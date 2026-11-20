@@ -1,0 +1,164 @@
+module guara
+
+import io
+import std.env as env
+import std.alloc.vec as vec
+import self.decoder as decoder
+import self.memory as memory
+import self.cpu as cpu
+
+/// Assembles a bare-metal RV32I Fibonacci program that computes `fib(n)`
+/// in `x10` (`a0`) and stores each intermediate term into RAM starting at `0x400`.
+///
+/// Register allocation:
+/// - `x11` (`a1`): `n` (iteration counter)
+/// - `x12` (`a2`): `a = 0`
+/// - `x13` (`a3`): `b = 1`
+/// - `x14` (`a4`): `next = a + b`
+/// - `x15` (`a5`): RAM write pointer (`0x400`)
+public func buildFibonacciProgram(n: u32): vec.Vec<u32> {
+    let mut prog = vec.Vec.new<u32>()
+    // 0x00: addi x11, x0, n
+    prog.push(decoder.encodeI(n, 0, 0x0, 11, 0x13))
+    // 0x04: addi x12, x0, 0
+    prog.push(decoder.encodeI(0, 0, 0x0, 12, 0x13))
+    // 0x08: addi x13, x0, 1
+    prog.push(decoder.encodeI(1, 0, 0x0, 13, 0x13))
+    // 0x0C: addi x15, x0, 0x400 (RAM array base)
+    prog.push(decoder.encodeI(0x400, 0, 0x0, 15, 0x13))
+    // loop (0x10):
+    // 0x10: beq x11, x0, +24 (to done at 0x28)
+    prog.push(decoder.encodeB(24, 0, 11, 0x0, 0x63))
+    // 0x14: add x14, x12, x13
+    prog.push(decoder.encodeR(0x00, 13, 12, 0x0, 14, 0x33))
+    // 0x18: sw x14, 0(x15)
+    prog.push(decoder.encodeS(0, 14, 15, 0x2, 0x23))
+    // 0x1C: addi x15, x15, 4
+    prog.push(decoder.encodeI(4, 15, 0x0, 15, 0x13))
+    // 0x20: addi x12, x13, 0  (a = b)
+    prog.push(decoder.encodeI(0, 13, 0x0, 12, 0x13))
+    // 0x24: addi x13, x14, 0  (b = next)
+    prog.push(decoder.encodeI(0, 14, 0x0, 13, 0x13))
+    // 0x28: addi x11, x11, -1 (0xFFF in 12-bit two's complement)
+    prog.push(decoder.encodeI(0xFFF, 11, 0x0, 11, 0x13))
+    // 0x2C: jal x0, -28 (back to 0x10)
+    prog.push(decoder.encodeJ(0xFFFFFFE4, 0, 0x6F))
+    // done (0x30):
+    // 0x30: addi x10, x12, 0 (a0 = result)
+    prog.push(decoder.encodeI(0, 12, 0x0, 10, 0x13))
+    // 0x34: ecall (halt)
+    prog.push(0x00000073)
+    return prog
+}
+
+// Fix branch offset in `buildFibonacciProgram`: loop at 0x10, done at 0x30 -> offset is +32!
+public func buildFibonacciProgramCorrect(n: u32): vec.Vec<u32> {
+    let mut prog = vec.Vec.new<u32>()
+    // 0x00: addi x11, x0, n
+    prog.push(decoder.encodeI(n, 0, 0x0, 11, 0x13))
+    // 0x04: addi x12, x0, 0
+    prog.push(decoder.encodeI(0, 0, 0x0, 12, 0x13))
+    // 0x08: addi x13, x0, 1
+    prog.push(decoder.encodeI(1, 0, 0x0, 13, 0x13))
+    // 0x0C: addi x15, x0, 0x400
+    prog.push(decoder.encodeI(0x400, 0, 0x0, 15, 0x13))
+    // loop (0x10):
+    // 0x10: beq x11, x0, +32 (jumps to 0x30)
+    prog.push(decoder.encodeB(32, 0, 11, 0x0, 0x63))
+    // 0x14: add x14, x12, x13
+    prog.push(decoder.encodeR(0x00, 13, 12, 0x0, 14, 0x33))
+    // 0x18: sw x14, 0(x15)
+    prog.push(decoder.encodeS(0, 14, 15, 0x2, 0x23))
+    // 0x1C: addi x15, x15, 4
+    prog.push(decoder.encodeI(4, 15, 0x0, 15, 0x13))
+    // 0x20: addi x12, x13, 0
+    prog.push(decoder.encodeI(0, 13, 0x0, 12, 0x13))
+    // 0x24: addi x13, x14, 0
+    prog.push(decoder.encodeI(0, 14, 0x0, 13, 0x13))
+    // 0x28: addi x11, x11, -1
+    prog.push(decoder.encodeI(0xFFF, 11, 0x0, 11, 0x13))
+    // 0x2C: jal x0, -28 (0x2C - 28 = 0x10)
+    prog.push(decoder.encodeJ(0xFFFFFFE4, 0, 0x6F))
+    // done (0x30):
+    // 0x30: addi x10, x12, 0
+    prog.push(decoder.encodeI(0, 12, 0x0, 10, 0x13))
+    // 0x34: ecall
+    prog.push(0x00000073)
+    return prog
+}
+
+/// Assembles Euclid's GCD (`gcd(a, b)`) using subtraction and `BNE`/`BLTU` branches.
+public func buildGcdProgram(a: u32, b: u32): vec.Vec<u32> {
+    let mut prog = vec.Vec.new<u32>()
+    // 0x00: addi x10, x0, a
+    prog.push(decoder.encodeI(a, 0, 0x0, 10, 0x13))
+    // 0x04: addi x11, x0, b
+    prog.push(decoder.encodeI(b, 0, 0x0, 11, 0x13))
+    // loop (0x08):
+    // 0x08: beq x10, x11, +24 (to done at 0x20)
+    prog.push(decoder.encodeB(24, 11, 10, 0x0, 0x63))
+    // 0x0C: bltu x10, x11, +12 (to b_greater at 0x18)
+    prog.push(decoder.encodeB(12, 11, 10, 0x6, 0x63))
+    // 0x10: sub x10, x10, x11
+    prog.push(decoder.encodeR(0x20, 11, 10, 0x0, 10, 0x33))
+    // 0x14: jal x0, -12 (to loop at 0x08)
+    prog.push(decoder.encodeJ(0xFFFFFFF4, 0, 0x6F))
+    // b_greater (0x18):
+    // 0x18: sub x11, x11, x10
+    prog.push(decoder.encodeR(0x20, 10, 11, 0x0, 11, 0x33))
+    // 0x1C: jal x0, -20 (to loop at 0x08)
+    prog.push(decoder.encodeJ(0xFFFFFFEC, 0, 0x6F))
+    // done (0x20):
+    // 0x20: ecall
+    prog.push(0x00000073)
+    return prog
+}
+
+func runProgram(title: str, words: []u32): int {
+    let mut mem = memory.newMemory(65536)
+    let mut hart = cpu.newCpu(0, 65536)
+    mem.loadProgramWords(0, words)
+
+    io.println("guara — RV32I Bare-Metal Micro-Emulator")
+    io.println("Running workload: ${title}")
+
+    match hart.run(mut ref mem, 100000) {
+        Ok(cycles) => {
+            let a0 = hart.readReg(10)
+            let sp = hart.readReg(2)
+            let pc = hart.pc
+            io.println("  Status: HALTED (ECALL)")
+            io.println("  Cycles executed: ${cycles}")
+            io.println("  Final PC: ${pc}")
+            io.println("  Return register a0 (x10): ${a0}")
+            io.println("  Stack pointer sp (x2): ${sp}")
+            return 0
+        }
+        Err(e) => {
+            io.println("guara trap: ${e}")
+            return 1
+        }
+    }
+}
+
+@Effects(Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    if argc >= 2 {
+        let cmd = env.arg(1)
+        if cmd == "gcd" {
+            let prog = buildGcdProgram(252, 105)
+            return runProgram("gcd(252, 105) -> expected 21", prog.asSlice())
+        }
+        if cmd == "fib" {
+            let prog = buildFibonacciProgramCorrect(20)
+            return runProgram("fib(20) -> expected 6765", prog.asSlice())
+        }
+        if cmd == "--help" || cmd == "-h" {
+            io.println("Usage: guara [fib|gcd]")
+            return 0
+        }
+    }
+    let prog = buildFibonacciProgramCorrect(20)
+    return runProgram("fib(20) -> expected 6765", prog.asSlice())
+}

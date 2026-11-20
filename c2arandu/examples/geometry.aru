@@ -1,0 +1,24 @@
+//! Arquivo gerado automaticamente pelo c2arandu
+//! Baseado na arquitetura Dual-Locus & OSSA da linguagem Arandu.
+
+// --- Typedefs e Aliases C ---
+
+// --- Estruturas C (@Repr("C")) ---
+@Repr("C")
+public struct Point {
+    public x: f32,
+    public y: f32,
+}
+
+// --- Funções Definidas e Transpiladas ---
+public func get_distance_squared(p1: ref Point, p2: ref Point): f32 {
+    let mut dx: f32 = (p1.x - p2.x)
+    let mut dy: f32 = (p1.y - p2.y)
+    return ((dx * dx) + (dy * dy))
+}
+
+public func move_point(p: mut ref Point, dx: f32, dy: f32): void {
+    p.x += dx
+    p.y += dy
+}
+

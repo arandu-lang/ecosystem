@@ -1,0 +1,183 @@
+module index
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+import self.simd_math as simd_math
+
+/// A ranked search hit returned by `FlatIndex.searchTopK`.
+public struct SearchResult {
+    public id: u64
+    public score: f32
+}
+
+/// Contiguous flat vector index storing `count` embeddings of dimension `dim`.
+///
+/// Storing all embeddings in a single `Vec<f32>` (`data`) instead of a
+/// `Vec<Vec<f32>>` eliminates pointer chasing and ensures sequential cache-line
+/// prefetching during exhaustive k-NN scans.
+public struct FlatIndex {
+    public dim: usize
+    public count: usize
+    public ids: vec.Vec<u64>
+    public data: vec.Vec<f32>
+}
+
+/// Creates a new empty `FlatIndex` for vectors of dimension `dim`.
+public func newFlatIndex(dim: usize): FlatIndex {
+    return FlatIndex {
+        dim: dim,
+        count: 0,
+        ids: vec.Vec.new<u64>(),
+        data: vec.Vec.new<f32>(),
+    }
+}
+
+/// Appends a vector with identifier `id` to the flat index.
+/// Returns `false` if `vecSlice` does not match `self.dim`.
+public func FlatIndex.addVector(self: mut ref FlatIndex, id: u64, vecSlice: []f32): bool {
+    let vlen = slice.len<f32>(vecSlice)
+    if vlen != self.dim || self.dim == 0 {
+        return false
+    }
+    self.ids.push(id)
+    let mut i: usize = 0
+    while i < vlen {
+        self.data.push(vecSlice[i])
+        i = i + 1
+    }
+    self.count = self.count + 1
+    return true
+}
+
+/// Inserts a candidate `(id, score)` into a bounded top-K buffer maintained
+/// in descending order of `score`.
+func insertTopK(results: mut ref vec.Vec<SearchResult>, k: usize, candidate: SearchResult): void {
+    if k == 0 {
+        return
+    }
+    let n = results.len()
+    if n == k {
+        match results.get(n - 1) {
+            Some(worst) => {
+                if candidate.score <= worst.score {
+                    return
+                }
+            }
+            None => {}
+        }
+    }
+
+    // Find insertion index (descending order: highest score at index 0)
+    let mut pos: usize = n
+    let mut i: usize = 0
+    while i < n {
+        match results.get(i) {
+            Some(cur) => {
+                if candidate.score > cur.score {
+                    pos = i
+                    break
+                }
+            }
+            None => {}
+        }
+        i = i + 1
+    }
+
+    // Pop tail elements above `pos` into a temporary stack
+    let mut tail = vec.Vec.new<SearchResult>()
+    while results.len() > pos {
+        match results.pop() {
+            Some(x) => {
+                tail.push(x)
+            }
+            None => {}
+        }
+    }
+
+    if results.len() < k {
+        results.push(candidate)
+    }
+
+    while tail.len() > 0 {
+        match tail.pop() {
+            Some(x) => {
+                if results.len() < k {
+                    results.push(x)
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// Exhaustively searches the flat index for the top `k` vectors with highest
+/// cosine similarity to `query` using 4-way SIMD dot products.
+public func FlatIndex.searchTopKCosine(self: ref FlatIndex, query: []f32, k: usize): vec.Vec<SearchResult> {
+    let mut top = vec.Vec.new<SearchResult>()
+    if k == 0 || self.count == 0 || slice.len<f32>(query) != self.dim {
+        return top
+    }
+
+    let qNorm = simd_math.l2NormSimd(query)
+    if qNorm < 0.00000001 {
+        return top
+    }
+
+    let allData = self.data.asSlice()
+    let allIds = self.ids.asSlice()
+    let dim = self.dim
+    let mut idx: usize = 0
+
+    while idx < self.count {
+        let offset = idx * dim
+        match slice.subslice<f32>(allData, offset, dim) {
+            Option.Some(vecSlice) => {
+                let dot = simd_math.dotProductSimd(query, vecSlice)
+                let vNorm = simd_math.l2NormSimd(vecSlice)
+                let denom = qNorm * vNorm
+                let score = if denom > 0.00000001 { dot / denom } else { 0.0 }
+                let cand = SearchResult {
+                    id: allIds[idx],
+                    score: score,
+                }
+                insertTopK(mut ref top, k, cand)
+            }
+            Option.None => {}
+        }
+        idx = idx + 1
+    }
+
+    return top
+}
+
+/// Exhaustively searches the flat index for the top `k` vectors with highest
+/// raw dot product with `query` using 4-way SIMD.
+public func FlatIndex.searchTopKDot(self: ref FlatIndex, query: []f32, k: usize): vec.Vec<SearchResult> {
+    let mut top = vec.Vec.new<SearchResult>()
+    if k == 0 || self.count == 0 || slice.len<f32>(query) != self.dim {
+        return top
+    }
+
+    let allData = self.data.asSlice()
+    let allIds = self.ids.asSlice()
+    let dim = self.dim
+    let mut idx: usize = 0
+
+    while idx < self.count {
+        let offset = idx * dim
+        match slice.subslice<f32>(allData, offset, dim) {
+            Option.Some(vecSlice) => {
+                let score = simd_math.dotProductSimd(query, vecSlice)
+                let cand = SearchResult {
+                    id: allIds[idx],
+                    score: score,
+                }
+                insertTopK(mut ref top, k, cand)
+            }
+            Option.None => {}
+        }
+        idx = idx + 1
+    }
+
+    return top
+}

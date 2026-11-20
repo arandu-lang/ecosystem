@@ -1,0 +1,74 @@
+module sarapo
+
+import io
+import std.env as env
+import std.net as net
+import std.alloc.vec as vec
+import std.core.num as num
+
+import self.handler as handler
+
+@Effects(Net, FileRead, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    let mut root_dir = "."
+    let mut port: int = 8080
+
+    let mut i: int = 1
+    while i < argc {
+        let a = env.arg(i)
+        if a == "--port" {
+            i = i + 1
+            if i < argc {
+                port = num.parse(env.arg(i)) ?? port
+            }
+        } else {
+            root_dir = a
+        }
+        i = i + 1
+    }
+
+    io.println("sarapo — minimal static HTTP/1.1 server")
+    io.println("Serving: ${root_dir}")
+    io.println("Listening on http://0.0.0.0:${port}")
+
+    match net.TcpListener.bind(port) {
+        Ok(mut listener) => {
+            let mut buf_storage = vec.Vec.filled<u8>(0, 4096)
+            // `TcpStream.read` wants `mut []u8`; `handleConn` wants `[]u8`.
+            // `readSlice` is the current stdlib escape for an immutable view of
+            // a writable Vec buffer without fighting place-ownership mid-loop.
+            let mut buf: []u8 = buf_storage.asSlice()
+
+            while true {
+                match listener.accept() {
+                    Ok(mut stream) => {
+                        match stream.readSlice(buf) {
+                            Ok(n) => {
+                                if n > 0 {
+                                    let resp = handler.handleConn(buf, n, root_dir)
+                                    match stream.write(resp.asSlice()) {
+                                        Ok(_) => {}
+                                        Err(_) => {}
+                                    }
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                        stream.close()
+                    }
+                    Err(_) => {
+                        io.println("sarapo: accept error")
+                        break
+                    }
+                }
+            }
+            listener.close()
+            return 0
+        }
+        Err(_) => {
+            io.println("sarapo: failed to bind to port ${port}")
+            return 1
+        }
+    }
+}

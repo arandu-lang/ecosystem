@@ -1,0 +1,47 @@
+module timers
+
+/// 60 Hz countdown timers for CHIP-8 delay and audio tone.
+public struct Timers {
+    public delayTimer: u8
+    public soundTimer: u8
+}
+
+/// Creates initialized timers set to zero.
+public func newTimers(): Timers {
+    return Timers {
+        delayTimer: 0,
+        soundTimer: 0,
+    }
+}
+
+/// Decrements active timers by 1 unit (invoked at 60 Hz).
+/// Returns true if the sound timer is active (buzzer active).
+public func Timers.tick(self: mut ref Timers): bool {
+    let mut soundActive = false
+    if self.delayTimer > 0 {
+        self.delayTimer = self.delayTimer - 1
+    }
+    if self.soundTimer > 0 {
+        soundActive = true
+        self.soundTimer = self.soundTimer - 1
+    }
+    return soundActive
+}
+
+public func Timers.getDelay(self: ref Timers): u8 {
+    return self.delayTimer
+}
+
+public func Timers.setDelay(self: mut ref Timers, val: u8): void {
+    self.delayTimer = val
+    return
+}
+
+public func Timers.getSound(self: ref Timers): u8 {
+    return self.soundTimer
+}
+
+public func Timers.setSound(self: mut ref Timers, val: u8): void {
+    self.soundTimer = val
+    return
+}

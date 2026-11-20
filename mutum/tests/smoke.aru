@@ -1,0 +1,104 @@
+module mutum_tests
+
+import std.testing as testing
+import std.alloc.vec as vec
+import self.context as context
+import self.engine as engine
+
+@Test
+func simpleVariableInterpolation(): void {
+    let mut ctx = context.newContext()
+    context.setStr(mut ref ctx, "name", "Arandu")
+    context.setInt(mut ref ctx, "year", 2026)
+
+    let tmpl = "Hello, {{ name }} in {{ year }}!"
+    let rendered = engine.render(tmpl, mut ref ctx)
+    let resStr = rendered.asStr()
+    testing.expectEqualStr("Hello, Arandu in 2026!", resStr, "Interpolation mismatch")
+    return
+}
+
+@Test
+func automaticHtmlXssEscaping(): void {
+    let mut ctx = context.newContext()
+    context.setStr(mut ref ctx, "input", "<script>alert('xss' & 'hack')</script>")
+
+    let tmpl = "<p>{{ input }}</p>"
+    let rendered = engine.render(tmpl, mut ref ctx)
+    let resStr = rendered.asStr()
+    testing.expectEqualStr("<p>&lt;script&gt;alert(&#39;xss&#39; &amp; &#39;hack&#39;)&lt;/script&gt;</p>", resStr, "HTML Auto-escaping failed")
+    return
+}
+
+@Test
+func rawFilterPreservesHtml(): void {
+    let mut ctx = context.newContext()
+    context.setStr(mut ref ctx, "html", "<b>Bold Text</b>")
+
+    let tmpl = "Notice: {{ html | raw }}"
+    let rendered = engine.render(tmpl, mut ref ctx)
+    let resStr = rendered.asStr()
+    testing.expectEqualStr("Notice: <b>Bold Text</b>", resStr, "Raw filter did not preserve HTML")
+    return
+}
+
+@Test
+func textFiltersUpperLowerAndTrim(): void {
+    let mut ctx = context.newContext()
+    context.setStr(mut ref ctx, "greet", "hello world")
+    context.setStr(mut ref ctx, "shout", "LOUD NOISE")
+    context.setStr(mut ref ctx, "padded", "   clean me   ")
+
+    let tmpl = "{{ greet | upper }} | {{ shout | lower }} | [{{ padded | trim }}]"
+    let rendered = engine.render(tmpl, mut ref ctx)
+    let resStr = rendered.asStr()
+    testing.expectEqualStr("HELLO WORLD | loud noise | [clean me]", resStr, "Text filters failed")
+    return
+}
+
+@Test
+func defaultFallbackWhenVariableMissing(): void {
+    let mut ctx = context.newContext()
+    context.setStr(mut ref ctx, "present", "Real Title")
+
+    let tmpl = "{{ present | default('Fallback') }} and {{ absent | default('Fallback') }}"
+    let rendered = engine.render(tmpl, mut ref ctx)
+    let resStr = rendered.asStr()
+    testing.expectEqualStr("Real Title and Fallback", resStr, "Default fallback failed")
+    return
+}
+
+@Test
+func conditionalIfElseBranching(): void {
+    let mut ctx = context.newContext()
+    context.setBool(mut ref ctx, "isOnline", true)
+    context.setBool(mut ref ctx, "hasError", false)
+
+    let tmpl = "{% if isOnline %}ONLINE{% else %}OFFLINE{% endif %} - {% if !hasError %}NO ERROR{% else %}ERROR{% endif %}"
+    let rendered = engine.render(tmpl, mut ref ctx)
+    let resStr1 = rendered.asStr()
+    testing.expectEqualStr("ONLINE - NO ERROR", resStr1, "Conditionals failed with true flags")
+
+    context.setBool(mut ref ctx, "isOnline", false)
+    context.setBool(mut ref ctx, "hasError", true)
+    let rendered2 = engine.render(tmpl, mut ref ctx)
+    let resStr2 = rendered2.asStr()
+    testing.expectEqualStr("OFFLINE - ERROR", resStr2, "Conditionals failed with inverted flags")
+    return
+}
+
+@Test
+func forLoopIterationAndLoopIndices(): void {
+    let mut ctx = context.newContext()
+    let mut fruits = vec.Vec.new<str>()
+    fruits.push("apple")
+    fruits.push("banana")
+    fruits.push("cherry")
+    context.setList(mut ref ctx, "fruits", fruits.asSlice())
+
+    let tmpl = "{% for f in fruits %}[#{{ loop.index }}: {{ f }}]{% endfor %}"
+    let rendered = engine.render(tmpl, mut ref ctx)
+    let resStr = rendered.asStr()
+    testing.expectEqualStr("[#1: apple][#2: banana][#3: cherry]", resStr, "For loop iteration or loop.index mismatch")
+    return
+}

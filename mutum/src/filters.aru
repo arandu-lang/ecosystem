@@ -1,0 +1,120 @@
+module filters
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+import self.value as value
+
+/// Escapes dangerous HTML characters to prevent XSS.
+/// Replaces &, <, >, ", ' with their corresponding HTML entities.
+public func escapeHtml(src: []u8, out: mut ref vec.Vec<u8>): void {
+    let n = slice.len<u8>(src)
+    let mut i: usize = 0
+    while i < n {
+        let b = src[i]
+        if b == 38 {
+            // & -> &amp;
+            out.push(38 as u8)
+            out.push(97 as u8)
+            out.push(109 as u8)
+            out.push(112 as u8)
+            out.push(59 as u8)
+        } else if b == 60 {
+            // < -> &lt;
+            out.push(38 as u8)
+            out.push(108 as u8)
+            out.push(116 as u8)
+            out.push(59 as u8)
+        } else if b == 62 {
+            // > -> &gt;
+            out.push(38 as u8)
+            out.push(103 as u8)
+            out.push(116 as u8)
+            out.push(59 as u8)
+        } else if b == 34 {
+            // " -> &quot;
+            out.push(38 as u8)
+            out.push(113 as u8)
+            out.push(117 as u8)
+            out.push(111 as u8)
+            out.push(116 as u8)
+            out.push(59 as u8)
+        } else if b == 39 {
+            // ' -> &#39;
+            out.push(38 as u8)
+            out.push(35 as u8)
+            out.push(51 as u8)
+            out.push(57 as u8)
+            out.push(59 as u8)
+        } else {
+            out.push(b)
+        }
+        i = i + 1
+    }
+    return
+}
+
+/// Converts ASCII characters in src to uppercase.
+public func filterUpper(src: []u8, out: mut ref vec.Vec<u8>): void {
+    let n = slice.len<u8>(src)
+    let mut i: usize = 0
+    while i < n {
+        let b = src[i]
+        if b >= 97 && b <= 122 {
+            out.push(b - 32)
+        } else {
+            out.push(b)
+        }
+        i = i + 1
+    }
+    return
+}
+
+/// Converts ASCII characters in src to lowercase.
+public func filterLower(src: []u8, out: mut ref vec.Vec<u8>): void {
+    let n = slice.len<u8>(src)
+    let mut i: usize = 0
+    while i < n {
+        let b = src[i]
+        if b >= 65 && b <= 90 {
+            out.push(b + 32)
+        } else {
+            out.push(b)
+        }
+        i = i + 1
+    }
+    return
+}
+
+/// Trims leading and trailing whitespace from byte slice.
+public func filterTrim(src: []u8, out: mut ref vec.Vec<u8>): void {
+    let n = slice.len<u8>(src)
+    if n == 0 {
+        return
+    }
+
+    let mut start: usize = 0
+    while start < n {
+        let b = src[start]
+        if b != 32 && b != 9 && b != 10 && b != 13 {
+            // Non-whitespace found
+            break
+        }
+        start = start + 1
+    }
+
+    let mut end: usize = n
+    while end > start {
+        let b = src[end - 1]
+        if b != 32 && b != 9 && b != 10 && b != 13 {
+            break
+        }
+        end = end - 1
+    }
+
+    let mut i = start
+    while i < end {
+        out.push(src[i])
+        i = i + 1
+    }
+    return
+}

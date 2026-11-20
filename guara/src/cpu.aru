@@ -1,0 +1,280 @@
+module cpu
+
+import std.alloc.vec as vec
+import self.decoder as decoder
+import self.memory as memory
+
+/// Architectural state of a 32-bit RISC-V (`RV32I`) hart.
+public struct Cpu {
+    public regs: vec.Vec<u32>
+    public pc: u32
+    public halted: bool
+    public cycles: u64
+    public exit_code: u32
+}
+
+/// Initializes a new `Cpu` with 32 registers (`x0..x31` = 0) and `pc = entry_pc`.
+/// Sets `x2` (`sp`) to the top of `mem_size` by default.
+public func newCpu(entry_pc: u32, mem_size: usize): Cpu {
+    let mut r = vec.Vec.new<u32>()
+    let mut i: usize = 0
+    while i < 32 {
+        r.push(0)
+        i = i + 1
+    }
+    // Initialize stack pointer x2 (sp) to top of RAM
+    if mem_size >= 16 {
+        r.set(2, (mem_size - 16) as u32)
+    }
+    return Cpu {
+        regs: r,
+        pc: entry_pc,
+        halted: false,
+        cycles: 0,
+        exit_code: 0,
+    }
+}
+
+/// Reads register `idx` (`0..31`). `x0` always returns `0`.
+public func Cpu.readReg(self: ref Cpu, idx: usize): u32 {
+    if idx == 0 || idx >= 32 {
+        return 0
+    }
+    let s = self.regs.asSlice()
+    return s[idx]
+}
+
+/// Writes `val` to register `idx` (`0..31`), enforcing the `x0 == 0` invariant.
+public func Cpu.writeReg(self: mut ref Cpu, idx: usize, val: u32): void {
+    if idx == 0 || idx >= 32 {
+        return
+    }
+    self.regs.set(idx, val)
+    return
+}
+
+/// Executes a single RV32I instruction at `self.pc`.
+///
+/// Key architectural invariants enforced:
+/// 1. `inst_pc` is captured before `next_pc = inst_pc + 4` so `AUIPC`, `JAL`,
+///    and `B`-type branches compute targets relative to the instruction's own PC.
+/// 2. `JAL` and `JALR` compute the return link (`inst_pc + 4`) before writing `rd`,
+///    properly handling `jalr x1, 0(x1)` where `rd == rs1`.
+/// 3. `x0` (`regs[0]`) is hardwired to zero.
+public func Cpu.step(self: mut ref Cpu, mem: mut ref memory.Memory): Result<bool, str> {
+    if self.halted {
+        return Result.Ok(false)
+    }
+
+    let instPc = self.pc
+    let mut nextPc = instPc + 4
+
+    if !mem.inBounds(instPc, 4) {
+        return Result.Err("guara: instruction fetch out of bounds")
+    }
+    let inst = mem.loadU32Fast(instPc)
+
+    let op = decoder.opcode(inst)
+    let rdIdx = decoder.rd(inst)
+    let f3 = decoder.funct3(inst)
+    let rs1Idx = decoder.rs1(inst)
+    let rs2Idx = decoder.rs2(inst)
+    let f7 = decoder.funct7(inst)
+
+    let v1 = self.readReg(rs1Idx)
+    let v2 = self.readReg(rs2Idx)
+
+    match op {
+        // LUI (0x37): rd = imm_u
+        0x37 => {
+            let immU = decoder.decodeImmU(inst)
+            self.writeReg(rdIdx, immU)
+        }
+        // AUIPC (0x17): rd = inst_pc + imm_u
+        0x17 => {
+            let immU = decoder.decodeImmU(inst)
+            self.writeReg(rdIdx, instPc + immU)
+        }
+        // JAL (0x6F): rd = inst_pc + 4; next_pc = inst_pc + imm_j
+        0x6F => {
+            let immJ = decoder.decodeImmJ(inst)
+            self.writeReg(rdIdx, nextPc)
+            nextPc = instPc + immJ
+        }
+        // JALR (0x67): rd = inst_pc + 4; next_pc = (rs1 + imm_i) & ~1
+        0x67 => {
+            let immI = decoder.decodeImmI(inst)
+            let target = (v1 + immI) & 0xFFFFFFFE
+            self.writeReg(rdIdx, nextPc)
+            nextPc = target
+        }
+        // BRANCH (0x63): BEQ, BNE, BLT, BGE, BLTU, BGEU
+        0x63 => {
+            let immB = decoder.decodeImmB(inst)
+            let s1 = v1 as i32
+            let s2 = v2 as i32
+            let take = match f3 {
+                0x0 => v1 == v2
+                0x1 => v1 != v2
+                0x4 => s1 < s2
+                0x5 => s1 >= s2
+                0x6 => v1 < v2
+                0x7 => v1 >= v2
+                _ => false
+            }
+            if take {
+                nextPc = instPc + immB
+            }
+        }
+        // LOAD (0x03): LB, LH, LW, LBU, LHU
+        0x03 => {
+            let immI = decoder.decodeImmI(inst)
+            let addr = v1 + immI
+            match f3 {
+                // LB (sign-extended 8-bit)
+                0x0 => {
+                    if !mem.inBounds(addr, 1) { return Result.Err("guara: LB out of bounds") }
+                    let b = mem.loadU8Fast(addr)
+                    let sext = (((b as u32) << 24) as i32) >> 24
+                    self.writeReg(rdIdx, sext as u32)
+                }
+                // LH (sign-extended 16-bit)
+                0x1 => {
+                    if !mem.inBounds(addr, 2) { return Result.Err("guara: LH out of bounds") }
+                    let h = mem.loadU16Fast(addr)
+                    let sext = (((h as u32) << 16) as i32) >> 16
+                    self.writeReg(rdIdx, sext as u32)
+                }
+                // LW (32-bit word)
+                0x2 => {
+                    if !mem.inBounds(addr, 4) { return Result.Err("guara: LW out of bounds") }
+                    let w = mem.loadU32Fast(addr)
+                    self.writeReg(rdIdx, w)
+                }
+                // LBU (zero-extended 8-bit)
+                0x4 => {
+                    if !mem.inBounds(addr, 1) { return Result.Err("guara: LBU out of bounds") }
+                    let b = mem.loadU8Fast(addr)
+                    self.writeReg(rdIdx, b as u32)
+                }
+                // LHU (zero-extended 16-bit)
+                0x5 => {
+                    if !mem.inBounds(addr, 2) { return Result.Err("guara: LHU out of bounds") }
+                    let h = mem.loadU16Fast(addr)
+                    self.writeReg(rdIdx, h as u32)
+                }
+                _ => {
+                    return Result.Err("guara: invalid funct3 for LOAD")
+                }
+            }
+        }
+        // STORE (0x23): SB, SH, SW
+        0x23 => {
+            let immS = decoder.decodeImmS(inst)
+            let addr = v1 + immS
+            match f3 {
+                0x0 => {
+                    if !mem.writeU8(addr, (v2 & 0xFF) as u8) {
+                        return Result.Err("guara: memory writeU8 out of bounds")
+                    }
+                }
+                0x1 => {
+                    if !mem.writeU16(addr, (v2 & 0xFFFF) as u16) {
+                        return Result.Err("guara: memory writeU16 out of bounds")
+                    }
+                }
+                0x2 => {
+                    if !mem.writeU32(addr, v2) {
+                        return Result.Err("guara: memory writeU32 out of bounds")
+                    }
+                }
+                _ => {
+                    return Result.Err("guara: invalid funct3 for STORE")
+                }
+            }
+        }
+        // OP-IMM (0x13): ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI
+        0x13 => {
+            let immI = decoder.decodeImmI(inst)
+            let shamt = immI & 0x1F
+            let res = match f3 {
+                // ADDI
+                0x0 => v1 + immI
+                // SLLI
+                0x1 => v1 << shamt
+                // SLTI (signed)
+                0x2 => if (v1 as i32) < (immI as i32) { 1 as u32 } else { 0 as u32 }
+                // SLTIU (unsigned)
+                0x3 => if v1 < immI { 1 as u32 } else { 0 as u32 }
+                // XORI
+                0x4 => v1 ^ immI
+                // SRLI / SRAI
+                0x5 => if (f7 & 0x20) != 0 { (((v1 as i32) >> (shamt as i32)) as u32) } else { v1 >> shamt }
+                // ORI
+                0x6 => v1 | immI
+                // ANDI
+                0x7 => v1 & immI
+                _ => 0 as u32
+            }
+            self.writeReg(rdIdx, res)
+        }
+        // OP (0x33): ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND
+        0x33 => {
+            let shamt = v2 & 0x1F
+            let res = match f3 {
+                // ADD / SUB
+                0x0 => if (f7 & 0x20) != 0 { v1 - v2 } else { v1 + v2 }
+                // SLL
+                0x1 => v1 << shamt
+                // SLT (signed)
+                0x2 => if (v1 as i32) < (v2 as i32) { 1 as u32 } else { 0 as u32 }
+                // SLTU (unsigned)
+                0x3 => if v1 < v2 { 1 as u32 } else { 0 as u32 }
+                // XOR
+                0x4 => v1 ^ v2
+                // SRL / SRA
+                0x5 => if (f7 & 0x20) != 0 { (((v1 as i32) >> (shamt as i32)) as u32) } else { v1 >> shamt }
+                // OR
+                0x6 => v1 | v2
+                // AND
+                0x7 => v1 & v2
+                _ => 0 as u32
+            }
+            self.writeReg(rdIdx, res)
+        }
+        // SYSTEM (0x73): ECALL / EBREAK
+        0x73 => {
+            // Convention: a0 (x10) holds the return / exit value on halt
+            self.exit_code = self.readReg(10)
+            self.halted = true
+        }
+        // FENCE (0x0F): NOP on single-core in-order hart
+        0x0F => {}
+        _ => {
+            return Result.Err("guara: illegal RV32I opcode")
+        }
+    }
+
+    // Hardwire x0 = 0
+    self.regs.set(0, 0)
+    self.pc = nextPc
+    self.cycles = self.cycles + 1
+    return Result.Ok(!self.halted)
+}
+
+/// Runs the processor until `ECALL`/`EBREAK` halts it or `max_cycles` is reached.
+public func Cpu.run(self: mut ref Cpu, mem: mut ref memory.Memory, max_cycles: u64): Result<u64, str> {
+    while !self.halted && self.cycles < max_cycles {
+        match self.step(mem) {
+            Ok(cont) => {
+                if !cont {
+                    break
+                }
+            }
+            Err(e) => {
+                return Result.Err(e)
+            }
+        }
+    }
+    return Result.Ok(self.cycles)
+}

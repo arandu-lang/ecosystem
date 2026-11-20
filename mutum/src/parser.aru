@@ -1,0 +1,424 @@
+module parser
+
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+import std.core.str as strings
+import self.ast as ast
+from self.ast import { NodeKind }
+
+/// Checks whether byte `b` is ASCII whitespace.
+func isWhitespace(b: u8): bool {
+    return b == 32 || b == 9 || b == 10 || b == 13
+}
+
+/// Finds the next occurrence of a two-byte sequence (e.g. {{ or {%) starting from `fromPos`.
+func findDelim(src: []u8, fromPos: usize, b0: u8, b1: u8): usize {
+    let n = slice.len<u8>(src)
+    if fromPos + 1 >= n {
+        return n
+    }
+    let mut i = fromPos
+    while i + 1 < n {
+        if src[i] == b0 && src[i + 1] == b1 {
+            return i
+        }
+        i = i + 1
+    }
+    return n
+}
+
+/// A slice range defined by start and end indices.
+public struct Range {
+    public start: usize
+    public end: usize
+}
+
+/// Trims whitespace from both ends of a byte slice range.
+func trimRange(src: []u8, start: usize, end: usize): Range {
+    let mut s = start
+    while s < end && isWhitespace(src[s]) {
+        s = s + 1
+    }
+    let mut e = end
+    while e > s && isWhitespace(src[e - 1]) {
+        e = e - 1
+    }
+    return Range {
+        start: s,
+        end: e,
+    }
+}
+
+/// Copies a byte range into an owned String.
+func rangeToString(src: []u8, start: usize, end: usize): ownedStrings.String {
+    let mut res = ownedStrings.String.new()
+    let mut i = start
+    while i < end {
+        res.pushScalar(src[i] as char)
+        i = i + 1
+    }
+    return res
+}
+
+/// Parsed metadata from a variable interpolation tag.
+public struct VarTag {
+    public varName: ownedStrings.String
+    public filterName: ownedStrings.String
+    public isRaw: bool
+    public defaultVal: ownedStrings.String
+}
+
+/// Parses the inner contents of a variable tag: `{{ varName [| filter] }}`.
+func parseVariableTag(src: []u8, start: usize, end: usize): VarTag {
+    let trimmed = trimRange(src, start, end)
+    let trimStart = trimmed.start
+    let trimEnd = trimmed.end
+
+    // Check for pipe '|'
+    let mut pipePos = trimEnd
+    let mut i = trimStart
+    while i < trimEnd {
+        if src[i] == 124 { // '|'
+            pipePos = i
+            i = trimEnd
+        } else {
+            i = i + 1
+        }
+    }
+
+    if pipePos < trimEnd {
+        let vRange = trimRange(src, trimStart, pipePos)
+        let varName = rangeToString(src, vRange.start, vRange.end)
+
+        let fRange = trimRange(src, pipePos + 1, trimEnd)
+        let filterStr = rangeToString(src, fRange.start, fRange.end)
+        let fBytes = filterStr.asBytes()
+        let fLen = slice.len<u8>(fBytes)
+
+        if fLen == 3 && fBytes[0] == 114 && fBytes[1] == 97 && fBytes[2] == 119 {
+            // "raw"
+            return VarTag {
+                varName: varName,
+                filterName: ownedStrings.String.from("raw"),
+                isRaw: true,
+                defaultVal: ownedStrings.String.new(),
+            }
+        } else if fLen >= 7 && fBytes[0] == 100 && fBytes[1] == 101 && fBytes[2] == 102 {
+            // "default(...)"
+            let mut quoteStart: usize = 0
+            let mut quoteEnd: usize = 0
+            let mut foundQuote = false
+            let mut qIdx: usize = 0
+            while qIdx < fLen {
+                if fBytes[qIdx] == 34 || fBytes[qIdx] == 39 { // '"' or '\''
+                    if !foundQuote {
+                        foundQuote = true
+                        quoteStart = qIdx + 1
+                    } else {
+                        quoteEnd = qIdx
+                        qIdx = fLen
+                    }
+                }
+                qIdx = qIdx + 1
+            }
+
+            let mut defVal = ownedStrings.String.new()
+            if foundQuote && quoteEnd >= quoteStart {
+                defVal = rangeToString(fBytes, quoteStart, quoteEnd)
+            }
+
+            return VarTag {
+                varName: varName,
+                filterName: ownedStrings.String.from("default"),
+                isRaw: false,
+                defaultVal: defVal,
+            }
+        } else {
+            return VarTag {
+                varName: varName,
+                filterName: filterStr,
+                isRaw: false,
+                defaultVal: ownedStrings.String.new(),
+            }
+        }
+    } else {
+        return VarTag {
+            varName: rangeToString(src, trimStart, trimEnd),
+            filterName: ownedStrings.String.new(),
+            isRaw: false,
+            defaultVal: ownedStrings.String.new(),
+        }
+    }
+}
+
+/// Compares a slice to an ASCII string.
+func sliceMatchesStr(src: []u8, start: usize, len: usize, expected: str): bool {
+    let expBytes = strings.asBytes(expected)
+    let expLen = slice.len<u8>(expBytes)
+    if len != expLen {
+        return false
+    }
+    let mut i: usize = 0
+    while i < expLen {
+        if src[start + i] != expBytes[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Internal cursor state for the template parser.
+public struct ParserState {
+    public pos: usize
+    public hitElse: bool
+}
+
+/// Recursively parses a block of nodes until a stopping control tag is reached.
+/// `stopKind`: 0 = EOF, 1 = else or endif, 2 = endif, 3 = endfor.
+public func parseNodes(
+    src: []u8,
+    state: mut ref ParserState,
+    stopKind: usize,
+    outAst: mut ref ast.TemplateAst,
+    outIndices: mut ref vec.Vec<usize>,
+): void {
+    let srcLen = slice.len<u8>(src)
+
+    while state.pos < srcLen {
+        let curPos = state.pos
+
+        // Find next tag start {{ or {%
+        let nextVar = findDelim(src, curPos, 123 as u8, 123 as u8) // {{
+        let nextTag = findDelim(src, curPos, 123 as u8, 37 as u8)  // {%
+
+        let mut nextDelim = nextVar
+        if nextTag < nextVar {
+            nextDelim = nextTag
+        }
+
+        // If there is literal text before the delimiter, add a Literal node
+        if nextDelim > curPos {
+            let litIdx = outAst.nodes.len()
+            outAst.nodes.push(ast.Node {
+                kind: NodeKind.Literal,
+                textStart: curPos,
+                textLen: nextDelim - curPos,
+                varName: ownedStrings.String.new(),
+                filterName: ownedStrings.String.new(),
+                isRaw: false,
+                defaultVal: ownedStrings.String.new(),
+                isNegated: false,
+                thenStart: 0,
+                thenCount: 0,
+                elseStart: 0,
+                elseCount: 0,
+                iterVar: ownedStrings.String.new(),
+                collectionVar: ownedStrings.String.new(),
+                bodyStart: 0,
+                bodyCount: 0,
+            })
+            outIndices.push(litIdx)
+            state.pos = nextDelim
+        }
+
+        if state.pos >= srcLen {
+            return
+        }
+
+        let atPos = state.pos
+
+        if nextDelim == nextVar {
+            // Parse variable {{ ... }}
+            let varEnd = findDelim(src, atPos + 2, 125 as u8, 125 as u8) // }}
+            if varEnd >= srcLen {
+                return
+            }
+
+            let tag = parseVariableTag(src, atPos + 2, varEnd)
+
+            let nodeIdx = outAst.nodes.len()
+            outAst.nodes.push(ast.Node {
+                kind: NodeKind.Variable,
+                textStart: 0,
+                textLen: 0,
+                varName: tag.varName,
+                filterName: tag.filterName,
+                isRaw: tag.isRaw,
+                defaultVal: tag.defaultVal,
+                isNegated: false,
+                thenStart: 0,
+                thenCount: 0,
+                elseStart: 0,
+                elseCount: 0,
+                iterVar: ownedStrings.String.new(),
+                collectionVar: ownedStrings.String.new(),
+                bodyStart: 0,
+                bodyCount: 0,
+            })
+            outIndices.push(nodeIdx)
+            state.pos = varEnd + 2
+        } else {
+            // Control tag {% ... %}
+            let tagEnd = findDelim(src, atPos + 2, 37 as u8, 125 as u8) // %}
+            if tagEnd >= srcLen {
+                return
+            }
+
+            let cRange = trimRange(src, atPos + 2, tagEnd)
+            let cStart = cRange.start
+            let cEnd = cRange.end
+            let cmdLen = cEnd - cStart
+
+            // Advance pos past %}
+            state.pos = tagEnd + 2
+
+            if sliceMatchesStr(src, cStart, 4, "else") && cmdLen == 4 {
+                if stopKind == 1 {
+                    state.hitElse = true
+                    return
+                }
+            } else if sliceMatchesStr(src, cStart, 5, "endif") && cmdLen == 5 {
+                if stopKind == 1 || stopKind == 2 {
+                    state.hitElse = false
+                    return
+                }
+            } else if sliceMatchesStr(src, cStart, 6, "endfor") && cmdLen == 6 {
+                if stopKind == 3 {
+                    return
+                }
+            } else if cmdLen >= 3 && sliceMatchesStr(src, cStart, 3, "if ") {
+                let condRange = trimRange(src, cStart + 3, cEnd)
+                let mut condStart = condRange.start
+                let condEnd = condRange.end
+
+                let mut isNegated = false
+                if condEnd > condStart && src[condStart] == 33 { // '!'
+                    isNegated = true
+                    condStart = condStart + 1
+                }
+
+                let condVar = rangeToString(src, condStart, condEnd)
+
+                // Parse then block
+                let mut thenIndices = vec.Vec.new<usize>()
+                state.hitElse = false
+                parseNodes(src, state, 1, outAst, mut ref thenIndices)
+
+                let thenStartIdx = outAst.childIndices.len()
+                let thenCount = thenIndices.len()
+                let mut tIdx: usize = 0
+                while tIdx < thenCount {
+                    outAst.childIndices.push(thenIndices.asSlice()[tIdx])
+                    tIdx = tIdx + 1
+                }
+
+                // If hit else, parse else block
+                let mut elseIndices = vec.Vec.new<usize>()
+                if state.hitElse {
+                    state.hitElse = false
+                    parseNodes(src, state, 2, outAst, mut ref elseIndices)
+                }
+
+                let elseStartIdx = outAst.childIndices.len()
+                let elseCount = elseIndices.len()
+                let mut eIdx: usize = 0
+                while eIdx < elseCount {
+                    outAst.childIndices.push(elseIndices.asSlice()[eIdx])
+                    eIdx = eIdx + 1
+                }
+
+                let ifNodeIdx = outAst.nodes.len()
+                outAst.nodes.push(ast.Node {
+                    kind: NodeKind.IfBlock,
+                    textStart: 0,
+                    textLen: 0,
+                    varName: condVar,
+                    filterName: ownedStrings.String.new(),
+                    isRaw: false,
+                    defaultVal: ownedStrings.String.new(),
+                    isNegated: isNegated,
+                    thenStart: thenStartIdx,
+                    thenCount: thenCount,
+                    elseStart: elseStartIdx,
+                    elseCount: elseCount,
+                    iterVar: ownedStrings.String.new(),
+                    collectionVar: ownedStrings.String.new(),
+                    bodyStart: 0,
+                    bodyCount: 0,
+                })
+                outIndices.push(ifNodeIdx)
+            } else if cmdLen >= 4 && sliceMatchesStr(src, cStart, 4, "for ") {
+                let forRange = trimRange(src, cStart + 4, cEnd)
+                let forStart = forRange.start
+                let forEnd = forRange.end
+
+                // Find " in "
+                let mut inPos = forEnd
+                let mut k = forStart
+                while k + 3 < forEnd {
+                    if isWhitespace(src[k]) && src[k + 1] == 105 && src[k + 2] == 110 && isWhitespace(src[k + 3]) {
+                        inPos = k
+                        k = forEnd
+                    } else {
+                        k = k + 1
+                    }
+                }
+
+                let itemRange = trimRange(src, forStart, inPos)
+                let iterVar = rangeToString(src, itemRange.start, itemRange.end)
+
+                let collRange = trimRange(src, inPos + 4, forEnd)
+                let collectionVar = rangeToString(src, collRange.start, collRange.end)
+
+                // Parse loop body
+                let mut bodyIndices = vec.Vec.new<usize>()
+                parseNodes(src, state, 3, outAst, mut ref bodyIndices)
+
+                let bodyStartIdx = outAst.childIndices.len()
+                let bodyCount = bodyIndices.len()
+                let mut bIdx: usize = 0
+                while bIdx < bodyCount {
+                    outAst.childIndices.push(bodyIndices.asSlice()[bIdx])
+                    bIdx = bIdx + 1
+                }
+
+                let forNodeIdx = outAst.nodes.len()
+                outAst.nodes.push(ast.Node {
+                    kind: NodeKind.ForLoop,
+                    textStart: 0,
+                    textLen: 0,
+                    varName: ownedStrings.String.new(),
+                    filterName: ownedStrings.String.new(),
+                    isRaw: false,
+                    defaultVal: ownedStrings.String.new(),
+                    isNegated: false,
+                    thenStart: 0,
+                    thenCount: 0,
+                    elseStart: 0,
+                    elseCount: 0,
+                    iterVar: iterVar,
+                    collectionVar: collectionVar,
+                    bodyStart: bodyStartIdx,
+                    bodyCount: bodyCount,
+                })
+                outIndices.push(forNodeIdx)
+            }
+        }
+    }
+    return
+}
+
+/// Compiles a template byte slice into a structured TemplateAst.
+public func compileTemplate(src: []u8): ast.TemplateAst {
+    let mut compiledAst = ast.newTemplateAst()
+    let mut state = ParserState {
+        pos: 0,
+        hitElse: false,
+    }
+    let mut rootIndices = vec.Vec.new<usize>()
+    parseNodes(src, mut ref state, 0, mut ref compiledAst, mut ref rootIndices)
+    compiledAst.rootIndices = rootIndices
+    return compiledAst
+}

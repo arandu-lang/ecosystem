@@ -1,0 +1,88 @@
+module ita_tests
+
+import std.testing as testing
+import std.core.str as strings
+
+import self.sha256 as sha256
+import self.hex as hex
+
+func toBytes(s: ref str): []u8 {
+    return strings.asBytes(s)
+}
+
+/// NIST FIPS 180-4 test vector: SHA-256("") =
+/// e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+@Test
+func sha256_empty_string_known_vector(): void {
+    let empty = toBytes("")
+    let digest = sha256.sha256Bytes(empty)
+    let h = hex.encodeDigest32(digest)
+    testing.expect(
+        h.asStr() == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "SHA-256('') mismatch"
+    )
+}
+
+/// SHA-256("abc"), also independently checked with sha256sum.
+/// ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+@Test
+func sha256_abc_known_vector(): void {
+    let data = toBytes("abc")
+    let digest = sha256.sha256Bytes(data)
+    let h = hex.encodeDigest32(digest)
+    testing.expect(
+        h.asStr() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "SHA-256('abc') mismatch"
+    )
+}
+
+/// NIST test vector: SHA-256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") =
+/// 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
+@Test
+func sha256_long_string_known_vector(): void {
+    let data = toBytes("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+    let digest = sha256.sha256Bytes(data)
+    let h = hex.encodeDigest32(digest)
+    testing.expect(
+        h.asStr() == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+        "SHA-256(long string) mismatch"
+    )
+}
+
+@Test
+func hex_encode_zero_digest(): void {
+    let encoded = hex.encodeDigest32([0 as u8; 32])
+    testing.expect(encoded.asStr() == "0000000000000000000000000000000000000000000000000000000000000000", "zero digest must encode all nibbles as '0'")
+}
+
+@Test
+func hex_encode_255_digest(): void {
+    let encoded = hex.encodeDigest32([255 as u8; 32])
+    testing.expect(encoded.asStr() == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "0xff digest must encode all nibbles as 'f'")
+}
+
+@Test
+func hex_encode_ab_digest(): void {
+    let encoded = hex.encodeDigest32([0xab as u8; 32])
+    testing.expect(encoded.asStr() == "abababababababababababababababababababababababababababababababab", "0xab digest must preserve high and low nibble order")
+}
+
+@Test
+func sha256_incremental_equals_oneshot(): void {
+    let data = toBytes("hello world")
+    // One-shot
+    let d1 = sha256.sha256Bytes(data)
+    // Incremental: split at 5
+    let mut state = sha256.sha256Init()
+    let part1 = toBytes("hello")
+    let part2 = toBytes(" world")
+    sha256.sha256Update(mut ref state, part1)
+    sha256.sha256Update(mut ref state, part2)
+    let d2 = sha256.sha256Finalize(mut ref state)
+    // Compare all 32 bytes
+    let mut i: usize = 0
+    while i < 32 {
+        testing.expect(d1[i] == d2[i], "incremental != oneshot at byte ${i}")
+        i = i + 1
+    }
+}

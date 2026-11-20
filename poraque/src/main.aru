@@ -1,0 +1,89 @@
+module poraque
+
+import io
+import std.env as env
+import std.fs as fs
+import std.core.slice as slice
+
+import self.hexdump as hexdump
+import self.elf as elf
+
+@Effects(FileRead, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    if argc < 3 {
+        io.println("poraque — hex viewer and ELF binary inspector")
+        io.println("")
+        io.println("Usage:")
+        io.println("  poraque hex <file> [--length <bytes>]")
+        io.println("  poraque elf <file> [--sections]")
+        return 1
+    }
+
+    let cmd = env.arg(1)
+    let file_path = env.arg(2)
+
+    match fs.readToBytes(file_path) {
+        Ok(content) => {
+            let bytes = content.asSlice()
+            let total_len = slice.len<u8>(bytes)
+
+            if cmd == "hex" {
+                let mut length: usize = if total_len < 256 { total_len } else { 256 }
+
+                let mut i: int = 3
+                while i < argc {
+                    let a = env.arg(i)
+                    if a == "--length" || a == "-n" {
+                        i = i + 1
+                        if i < argc {
+                            let l_str = env.arg(i)
+                            if l_str == "64" { length = 64 }
+                            else if l_str == "128" { length = 128 }
+                            else if l_str == "256" { length = 256 }
+                            else if l_str == "512" { length = 512 }
+                            else if l_str == "1024" { length = 1024 }
+                            else if l_str == "all" { length = total_len }
+                        }
+                    }
+                    i = i + 1
+                }
+
+                hexdump.dumpBytes(bytes, 0, length)
+                return 0
+            } else if cmd == "elf" {
+                match elf.parseEhdr(bytes) {
+                    Ok(ehdr) => {
+                        let mut show_sections = false
+                        let mut i: int = 3
+                        while i < argc {
+                            if env.arg(i) == "--sections" {
+                                show_sections = true
+                            }
+                            i = i + 1
+                        }
+
+                        elf.printElfSummary(bytes, ref ehdr)
+
+                        if show_sections {
+                            io.println("")
+                            elf.printSections(bytes, ref ehdr)
+                        }
+                        return 0
+                    }
+                    Err(e) => {
+                        io.println("poraque: ${e}")
+                        return 1
+                    }
+                }
+            } else {
+                io.println("poraque: unknown command ${cmd}")
+                return 1
+            }
+        }
+        Err(_) => {
+            io.println("poraque: cannot read file ${file_path}")
+            return 1
+        }
+    }
+}

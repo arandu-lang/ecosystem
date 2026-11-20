@@ -1,0 +1,29 @@
+# Arandu package manifest
+schema = 1
+
+[package]
+name = "jabuti"
+version = "0.1.0"
+edition = "2026"
+
+[toolchain]
+arandu = ">=0.1.0-rc.4, <0.2.0"
+
+[targets.bin]
+name = "jabuti"
+root = "src/main.aru"
+
+[dependencies]
+
+[capabilities]
+network = []
+filesystem_read = ["**"]
+filesystem_write = ["**"]
+environment = []
+process = []
+foreign = true
+
+[policy.effects]
+deny_new_authority = true
+warn_new_resources = true
+deny = ["UnknownCapability"]

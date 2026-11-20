@@ -1,0 +1,107 @@
+module keypad
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+
+/// 16-key hexadecimal keypad representation for CHIP-8 / Super-CHIP.
+public struct Keypad {
+    public keys: vec.Vec<bool>
+}
+
+/// Creates a new keypad with all 16 keys unpressed.
+public func newKeypad(): Keypad {
+    let mut keyList = vec.Vec.new<bool>()
+    let mut i: usize = 0
+    while i < 16 {
+        keyList.push(false)
+        i = i + 1
+    }
+    return Keypad {
+        keys: keyList,
+    }
+}
+
+/// Checks if a key (0x0 - 0xF) is currently held down.
+public func Keypad.isPressed(self: ref Keypad, key: u8): bool {
+    if (key as usize) >= 16 {
+        return false
+    }
+    let s = self.keys.asSlice()
+    return s[key as usize]
+}
+
+/// Marks a key as pressed.
+public func Keypad.setKeyDown(self: mut ref Keypad, key: u8): void {
+    if (key as usize) < 16 {
+        self.keys.set(key as usize, true)
+    }
+    return
+}
+
+/// Marks a key as released.
+public func Keypad.setKeyUp(self: mut ref Keypad, key: u8): void {
+    if (key as usize) < 16 {
+        self.keys.set(key as usize, false)
+    }
+    return
+}
+
+/// Releases all keys.
+public func Keypad.clear(self: mut ref Keypad): void {
+    let mut i: usize = 0
+    while i < 16 {
+        self.keys.set(i, false)
+        i = i + 1
+    }
+    return
+}
+
+/// Finds the first pressed key, if any.
+public func Keypad.getFirstPressed(self: ref Keypad): Option<u8> {
+    let s = self.keys.asSlice()
+    let mut i: usize = 0
+    while i < 16 {
+        if s[i] {
+            return Option.Some(i as u8)
+        }
+        i = i + 1
+    }
+    return Option.None
+}
+
+/// Maps keyboard ASCII characters (and gaming aliases WASD/arrows) to CHIP-8 hex keypad digits.
+public func mapCharToChip8(c: u8): Option<u8> {
+    // Digits 1, 2, 3, 4
+    if c == 49 { return Option.Some(1 as u8) } // '1' -> 1
+    if c == 50 { return Option.Some(2 as u8) } // '2' -> 2
+    if c == 51 { return Option.Some(3 as u8) } // '3' -> 3
+    if c == 52 { return Option.Some(12 as u8) } // '4' -> C
+
+    // WASD gaming controls (aligned with Tetris semantics: 5=Left, 6=Right, 4=Rotate, 7=Down, 8=Drop)
+    if c == 97 || c == 65 { return Option.Some(5 as u8) } // 'a'/'A' -> Move Left (Key 5)
+    if c == 100 || c == 68 { return Option.Some(6 as u8) } // 'd'/'D' -> Move Right (Key 6)
+    if c == 119 || c == 87 { return Option.Some(4 as u8) } // 'w'/'W' -> Rotate (Key 4)
+    if c == 115 || c == 83 { return Option.Some(7 as u8) } // 's'/'S' -> Soft Drop (Key 7)
+
+    // Space & Enter
+    if c == 32 { return Option.Some(8 as u8) } // Space -> Hard Drop (Key 8)
+    if c == 10 || c == 13 { return Option.Some(0 as u8) } // Enter -> Start / Key 0
+
+    // Classic CHIP-8 keypad letters
+    if c == 113 || c == 81 { return Option.Some(5 as u8) } // 'q'/'Q' -> Left (Key 5)
+    if c == 101 || c == 69 { return Option.Some(6 as u8) } // 'e'/'E' -> Right (Key 6)
+    if c == 114 || c == 82 { return Option.Some(13 as u8) } // 'r'/'R' -> D
+    if c == 102 || c == 70 { return Option.Some(14 as u8) } // 'f'/'F' -> E
+    if c == 122 || c == 90 { return Option.Some(10 as u8) } // 'z'/'Z' -> A
+    if c == 120 || c == 88 { return Option.Some(0 as u8) } // 'x'/'X' -> 0
+    if c == 99 || c == 67 { return Option.Some(11 as u8) } // 'c'/'C' -> B
+    if c == 118 || c == 86 { return Option.Some(15 as u8) } // 'v'/'V' -> F
+
+    // Vim/HJKL aliases
+    if c == 104 || c == 72 { return Option.Some(5 as u8) } // 'h'/'H' -> Left (5)
+    if c == 108 || c == 76 { return Option.Some(6 as u8) } // 'l'/'L' -> Right (6)
+    if c == 107 || c == 75 { return Option.Some(4 as u8) } // 'k'/'K' -> Rotate (4)
+    if c == 106 || c == 74 { return Option.Some(7 as u8) } // 'j'/'J' -> Down (7)
+
+    return Option.None
+}

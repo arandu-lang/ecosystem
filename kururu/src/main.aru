@@ -1,0 +1,97 @@
+module kururu
+
+import io
+import std.env as env
+import std.alloc.vec as vec
+import std.time as time
+
+import self.math as math
+import self.tracer as tracer
+import self.scene as scene
+import self.ppm as ppm
+
+@Effects(FileWrite, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    let mut out_path = "output.ppm"
+    let mut width: uint = 400
+    let mut height: uint = 300
+
+    let mut i: int = 1
+    while i < argc {
+        let a = env.arg(i)
+        if a == "--width" {
+            i = i + 1
+            if i < argc {
+                let w = env.arg(i)
+                if w == "800" { width = 800 }
+                else if w == "640" { width = 640 }
+                else if w == "320" { width = 320 }
+                else if w == "200" { width = 200 }
+            }
+        } else if a == "--height" {
+            i = i + 1
+            if i < argc {
+                let h = env.arg(i)
+                if h == "600" { height = 600 }
+                else if h == "480" { height = 480 }
+                else if h == "240" { height = 240 }
+                else if h == "150" { height = 150 }
+            }
+        } else {
+            out_path = a
+        }
+        i = i + 1
+    }
+
+    io.println("kururu — CPU ray tracer")
+    io.println("Resolution: ${width}x${height}")
+    io.println("Rendering to: ${out_path}...")
+
+    let mut scn = scene.buildScene(0)
+    let spheres_slice = scn.spheres.asSlice()
+    let lights_slice = scn.lights.asSlice()
+
+    let total_pixels = width * height
+    let mut fb = vec.Vec.new<u8>()
+
+    let t_start = time.Instant.now()
+
+    let mut y: uint = height
+    while y > 0 {
+        y = y - 1
+        let v = (y as f32) / (height as f32)
+
+        let mut x: uint = 0
+        while x < width {
+            let u = (x as f32) / (width as f32)
+            let ray = scn.camera.getRay(u, v)
+
+            let c = tracer.rayColor(ref ray, spheres_slice, lights_slice, 3)
+
+            let r_byte = (c.x * 255.0) as u8
+            let g_byte = (c.y * 255.0) as u8
+            let b_byte = (c.z * 255.0) as u8
+
+            fb.push(r_byte)
+            fb.push(g_byte)
+            fb.push(b_byte)
+
+            x = x + 1
+        }
+    }
+
+    let elapsed = time.Instant.now().durationSince(t_start).asMillis()
+    io.println("Rendered ${total_pixels} pixels in ${elapsed} ms")
+
+    match ppm.writePpm(out_path, fb.asSlice(), width, height) {
+        Ok(_) => {
+            io.println("Saved image to ${out_path}")
+        }
+        Err(e) => {
+            io.println("kururu error: ${e}")
+        }
+    }
+
+    return 0
+}

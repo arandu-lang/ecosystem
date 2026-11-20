@@ -1,0 +1,107 @@
+module jabuti_tests
+
+import std.testing as testing
+import std.alloc.vec as vec
+import self.simd_math as simd_math
+import self.index as index
+
+func absDiff(a: f32, b: f32): f32 {
+    return if a >= b { a - b } else { b - a }
+}
+
+@Test
+func simd_dot_matches_scalar_across_unrolled_and_tail_dimensions(): void {
+    // Dimension 39 tests: 2 x 16-lane unrolled blocks (32) + 1 x 4-lane block (4) + 3 scalar tail lanes = 39
+    let mut a = vec.Vec.new<f32>()
+    let mut b = vec.Vec.new<f32>()
+    let mut i: usize = 0
+    while i < 39 {
+        let fa = ((i as int) - 10) as f32 * 0.25
+        let fb = ((i as int) * 3 - 7) as f32 * 0.125
+        a.push(fa)
+        b.push(fb)
+        i = i + 1
+    }
+
+    let expected = simd_math.dotProductScalar(a.asSlice(), b.asSlice())
+    let actual = simd_math.dotProductSimd(a.asSlice(), b.asSlice())
+    testing.expect(absDiff(expected, actual) < 0.001, "4-way SIMD dot product must match scalar on dim=39")
+}
+
+@Test
+func simd_dot_128_dim_embedding(): void {
+    let mut a = vec.Vec.new<f32>()
+    let mut b = vec.Vec.new<f32>()
+    let mut i: usize = 0
+    while i < 128 {
+        a.push(1.0)
+        b.push(2.5)
+        i = i + 1
+    }
+    let d = simd_math.dotProductSimd(a.asSlice(), b.asSlice())
+    // 128 * 2.5 = 320.0
+    testing.expect(absDiff(d, 320.0) < 0.01, "128-d dot product of 1.0 and 2.5 must be 320.0")
+}
+
+@Test
+func cosine_similarity_identical_orthogonal_and_opposite(): void {
+    let mut v1 = vec.Vec.new<f32>()
+    let mut v2 = vec.Vec.new<f32>()
+    let mut v3 = vec.Vec.new<f32>()
+    let mut i: usize = 0
+    while i < 16 {
+        v1.push(if i % 2 == 0 { 1.0 } else { 0.0 })
+        v2.push(if i % 2 == 0 { 0.0 } else { 1.0 })
+        v3.push(if i % 2 == 0 { -1.0 } else { 0.0 })
+        i = i + 1
+    }
+
+    let sim_same = simd_math.cosineSimilaritySimd(v1.asSlice(), v1.asSlice())
+    let sim_ortho = simd_math.cosineSimilaritySimd(v1.asSlice(), v2.asSlice())
+    let sim_opp = simd_math.cosineSimilaritySimd(v1.asSlice(), v3.asSlice())
+
+    testing.expect(absDiff(sim_same, 1.0) < 0.001, "identical vectors must have cosine ~1.0")
+    testing.expect(absDiff(sim_ortho, 0.0) < 0.001, "orthogonal vectors must have cosine ~0.0")
+    testing.expect(absDiff(sim_opp, -1.0) < 0.001, "opposite vectors must have cosine ~-1.0")
+}
+
+@Test
+func l2_distance_squared_simd(): void {
+    let mut a = vec.Vec.new<f32>()
+    let mut b = vec.Vec.new<f32>()
+    let mut i: usize = 0
+    while i < 20 {
+        a.push(5.0)
+        b.push(2.0)
+        i = i + 1
+    }
+    // 20 * (5 - 2)^2 = 20 * 9 = 180.0
+    let dist_sq = simd_math.l2DistanceSqSimd(a.asSlice(), b.asSlice())
+    testing.expect(absDiff(dist_sq, 180.0) < 0.01, "L2 distance sq must be 180.0")
+}
+
+@Test
+func flat_index_top_k_ranking(): void {
+    let mut idx = index.newFlatIndex(8)
+
+    let mut v_orth = vec.Vec.new<f32>()
+    let mut v_close = vec.Vec.new<f32>()
+    let mut v_exact = vec.Vec.new<f32>()
+    let mut k: usize = 0
+    while k < 8 {
+        v_orth.push(if k == 0 { 0.0 } else { 1.0 })
+        v_close.push(if k == 0 { 5.0 } else { 1.0 })
+        v_exact.push(if k == 0 { 1.0 } else { 0.0 })
+        k = k + 1
+    }
+
+    idx.addVector(10, v_orth.asSlice())
+    idx.addVector(20, v_close.asSlice())
+    idx.addVector(30, v_exact.asSlice())
+
+    let top2 = idx.searchTopKCosine(v_exact.asSlice(), 2)
+    testing.expect(top2.len() == 2, "expected 2 results from top-2 search")
+    let s = top2.asSlice()
+    testing.expect(s[0].id == 30, "rank 1 must be exact match id=30")
+    testing.expect(s[1].id == 20, "rank 2 must be close match id=20")
+}

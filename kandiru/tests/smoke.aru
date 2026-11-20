@@ -1,0 +1,207 @@
+module kandiru_tests
+
+import std.testing as testing
+import std.core.str as strings
+import std.core.slice as slice
+
+from self.parser import { JsonKind }
+import self.parser as parser
+import self.query as query
+
+
+@Test
+func parse_null(): void {
+    let src = strings.asBytes("null")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_null = match n.kind {
+                JsonKind.Null => true
+                _ => false
+            }
+            testing.expect(ok_null, "root must be null")
+        }
+        Err(e) => { testing.expect(false, "parse null failed: ${e.message}") }
+    }
+}
+
+@Test
+func parse_bool_true(): void {
+    let src = strings.asBytes("true")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_booltrue = match n.kind {
+                JsonKind.BoolTrue => true
+                _ => false
+            }
+            testing.expect(ok_booltrue, "root must be BoolTrue")
+        }
+        Err(e) => { testing.expect(false, "parse true failed: ${e.message}") }
+    }
+}
+
+@Test
+func parse_bool_false(): void {
+    let src = strings.asBytes("false")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_boolfalse = match n.kind {
+                JsonKind.BoolFalse => true
+                _ => false
+            }
+            testing.expect(ok_boolfalse, "root must be BoolFalse")
+        }
+        Err(e) => { testing.expect(false, "parse false failed") }
+    }
+}
+
+@Test
+func parse_integer(): void {
+    let src = strings.asBytes("42")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_integer = match n.kind {
+                JsonKind.Integer => true
+                _ => false
+            }
+            testing.expect(ok_integer, "must be Integer")
+            testing.expect(n.int_val == 42, "int_val must be 42")
+        }
+        Err(e) => { testing.expect(false, "parse integer failed") }
+    }
+}
+
+@Test
+func parse_negative_integer(): void {
+    let src = strings.asBytes("-7")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_integer = match n.kind {
+                JsonKind.Integer => true
+                _ => false
+            }
+            testing.expect(ok_integer, "must be Integer")
+            testing.expect(n.int_val == -7, "int_val must be -7")
+        }
+        Err(e) => { testing.expect(false, "parse -7 failed") }
+    }
+}
+
+@Test
+func parse_string(): void {
+    let src = strings.asBytes("\"hello\"")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_string = match n.kind {
+                JsonKind.String => true
+                _ => false
+            }
+            testing.expect(ok_string, "must be String")
+            testing.expect(n.str_len == 5, "string length must be 5")
+        }
+        Err(e) => { testing.expect(false, "parse string failed") }
+    }
+}
+
+@Test
+func parse_empty_array(): void {
+    let src = strings.asBytes("[]")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_array = match n.kind {
+                JsonKind.Array => true
+                _ => false
+            }
+            testing.expect(ok_array, "must be Array")
+            testing.expect(n.child_count == 0, "empty array has 0 children")
+        }
+        Err(e) => { testing.expect(false, "parse [] failed") }
+    }
+}
+
+@Test
+func parse_array_with_elements(): void {
+    let src = strings.asBytes("[1, 2, 3]")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_array = match n.kind {
+                JsonKind.Array => true
+                _ => false
+            }
+            testing.expect(ok_array, "must be Array")
+            testing.expect(n.child_count == 3, "array has 3 children")
+            let c0 = arena.node(arena.arrayChild(arena.root, 0))
+            testing.expect(c0.int_val == 1, "first element is 1")
+            let c2 = arena.node(arena.arrayChild(arena.root, 2))
+            testing.expect(c2.int_val == 3, "third element is 3")
+        }
+        Err(e) => { testing.expect(false, "parse [1,2,3] failed") }
+    }
+}
+
+@Test
+func parse_object_and_query_key(): void {
+    let src = strings.asBytes("{\"name\": \"arandu\", \"version\": 1}")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let n = arena.node(arena.root)
+            let ok_object = match n.kind {
+                JsonKind.Object => true
+                _ => false
+            }
+            testing.expect(ok_object, "must be Object")
+            testing.expect(n.child_count == 2, "object has 2 fields")
+            // Query .name
+            let steps = query.parseQuery(".name")
+            let q_bytes = strings.asBytes(".name")
+            let results = query.applyQuery(ref arena, src, ref steps, q_bytes)
+            testing.expect(results.len() == 1, "query .name returns 1 result")
+            let results_slice = results.asSlice()
+            let name_node = arena.node(results_slice[0])
+            let ok_string = match name_node.kind {
+                JsonKind.String => true
+                _ => false
+            }
+            testing.expect(ok_string, ".name is a String")
+            testing.expect(name_node.str_len == 6, ".name length is 6 (arandu)")
+        }
+        Err(e) => { testing.expect(false, "parse object failed: ${e.message}") }
+    }
+}
+
+@Test
+func query_array_index(): void {
+    let src = strings.asBytes("[10, 20, 30]")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            let steps = query.parseQuery(".[1]")
+            let q_bytes = strings.asBytes(".[1]")
+            let results = query.applyQuery(ref arena, src, ref steps, q_bytes)
+            testing.expect(results.len() == 1, ".[1] returns 1 result")
+            let results_slice = results.asSlice()
+            let node = arena.node(results_slice[0])
+            testing.expect(node.int_val == 20, ".[1] is 20")
+        }
+        Err(e) => { testing.expect(false, "parse [10,20,30] failed") }
+    }
+}
+
+@Test
+func parse_error_on_invalid_json(): void {
+    let src = strings.asBytes("{invalid}")
+    match parser.parseJson(src) {
+        Ok(mut arena) => {
+            testing.expect(false, "should have returned Err for invalid JSON")
+        }
+        Err(_) => {
+            testing.expect(true, "correctly returned Err for invalid JSON")
+        }
+    }
+}

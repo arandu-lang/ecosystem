@@ -1,0 +1,185 @@
+module handler
+
+import std.fs as fs
+import std.path as path
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+import std.core.str as strings
+
+import self.parser as parser
+from self.parser import { Method }
+import self.status as status
+
+public struct ServerConfig {
+    public root_dir: ownedStrings.String
+    public port: uint
+}
+
+public func detectContentType(file_path: str): str {
+    if strings.endsWith(file_path, ".html") || strings.endsWith(file_path, ".htm") {
+        return "text/html; charset=utf-8"
+    }
+    if strings.endsWith(file_path, ".css") {
+        return "text/css; charset=utf-8"
+    }
+    if strings.endsWith(file_path, ".js") {
+        return "application/javascript; charset=utf-8"
+    }
+    if strings.endsWith(file_path, ".json") {
+        return "application/json; charset=utf-8"
+    }
+    if strings.endsWith(file_path, ".svg") {
+        return "image/svg+xml"
+    }
+    if strings.endsWith(file_path, ".png") {
+        return "image/png"
+    }
+    if strings.endsWith(file_path, ".jpg") || strings.endsWith(file_path, ".jpeg") {
+        return "image/jpeg"
+    }
+    if strings.endsWith(file_path, ".wasm") {
+        return "application/wasm"
+    }
+    return "text/plain; charset=utf-8"
+}
+
+func appendStr(out: mut ref vec.Vec<u8>, s: ref str): void {
+    let b = strings.asBytes(s)
+    let n = slice.len<u8>(b)
+    let mut i: usize = 0
+    while i < n {
+        out.push(b[i])
+        i = i + 1
+    }
+}
+
+/// Returns `s` without its leading `/`.
+func stripLeadingSlash(s: ref str): ownedStrings.String {
+    let b = strings.asBytes(s)
+    let n = slice.len<u8>(b)
+    let mut out = ownedStrings.String.new()
+    let mut i: usize = 1
+    while i < n {
+        out.pushScalar(b[i] as char)
+        i = i + 1
+    }
+    return out
+}
+
+/// Validates a relative URL path against directory traversal (`..`), backslashes,
+/// and null bytes.
+public func isSafeRelativePath(rel: str): bool {
+    if strings.contains(rel, "..") {
+        return false
+    }
+    if strings.contains(rel, "\\") {
+        return false
+    }
+    let b = strings.asBytes(rel)
+    let n = slice.len<u8>(b)
+    let mut i: usize = 0
+    while i < n {
+        if b[i] == 0 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Builds a response. `content_length` always reflects the body length
+/// (HTTP requires it for HEAD); `include_body` controls whether the bytes
+/// are actually written.
+public func buildResponse(code: uint, content_type: str, body: []u8, include_body: bool): vec.Vec<u8> {
+    let mut out = vec.Vec.new<u8>()
+    let reason = status.statusText(code)
+    let body_len = slice.len<u8>(body)
+
+    // NOTE: interpolated temporaries must be bound to a local before being
+    // passed to a `ref str` parameter (passing the temporary directly is a
+    // double free in the current code generator).
+    let code_str = "${code}"
+    let body_len_str = "${body_len}"
+
+    appendStr(mut ref out, "HTTP/1.1 ")
+    appendStr(mut ref out, code_str)
+    appendStr(mut ref out, " ")
+    appendStr(mut ref out, reason)
+    appendStr(mut ref out, "\r\nContent-Type: ")
+    appendStr(mut ref out, content_type)
+    appendStr(mut ref out, "\r\nContent-Length: ")
+    appendStr(mut ref out, body_len_str)
+    appendStr(mut ref out, "\r\nConnection: close\r\n\r\n")
+
+    if include_body {
+        let mut i: usize = 0
+        while i < body_len {
+            out.push(body[i])
+            i = i + 1
+        }
+    }
+
+    return out
+}
+
+@Effects(FileRead, Foreign)
+public func handleConn(buf: []u8, len: usize, root_dir: str): vec.Vec<u8> {
+    match parser.parseRequest(buf, len) {
+        Ok(req) => {
+            let mut is_allowed = false
+            let mut is_head = false
+            if req.method is Method.Get {
+                is_allowed = true
+            }
+            if req.method is Method.Head {
+                is_allowed = true
+                is_head = true
+            }
+            if !is_allowed {
+                let err_body = strings.asBytes("Method Not Allowed")
+                return buildResponse(405, "text/plain", err_body, true)
+            }
+
+            // Clean path to prevent path traversal.
+            let mut rel_path = ownedStrings.String.new()
+            if req.path.asStr() == "/" {
+                rel_path = ownedStrings.String.from("index.html")
+            } else if strings.startsWith(req.path.asStr(), "/") {
+                rel_path = stripLeadingSlash(req.path.asStr())
+            } else {
+                rel_path = ownedStrings.String.from(req.path.asStr())
+            }
+
+            if !isSafeRelativePath(rel_path.asStr()) {
+                let forbidden_body = strings.asBytes("403 Forbidden: Path traversal rejected")
+                return buildResponse(403, "text/plain", forbidden_body, !is_head)
+            }
+
+            let full_path: ownedStrings.String = path.Path.from(root_dir).joinOwned(rel_path.asStr())
+            let path_str = full_path.asStr()
+
+            if fs.fileExists(path_str) {
+                match fs.readToBytes(path_str) {
+                    Ok(file_content) => {
+                        let ctype = detectContentType(path_str)
+                        let resp = buildResponse(200, ctype, file_content.asSlice(), !is_head)
+                        return resp
+                    }
+                    Err(_) => {
+                        let err_body = strings.asBytes("Internal Server Error")
+                        return buildResponse(500, "text/plain", err_body, true)
+                    }
+                }
+            } else {
+                let not_found_body = strings.asBytes("404 Not Found")
+                return buildResponse(404, "text/plain", not_found_body, true)
+            }
+        }
+        Err(e) => {
+            let err_msg = "Bad Request: ${e}"
+            let err_body = strings.asBytes(err_msg)
+            return buildResponse(400, "text/plain", err_body, true)
+        }
+    }
+}

@@ -1,0 +1,125 @@
+module printer
+
+import io
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+
+import self.parser as parser
+from self.parser import { JsonKind }
+
+func printIndent(depth: uint): void {
+    let mut i: uint = 0
+    while i < depth {
+        io.print("  ")
+        i = i + 1
+    }
+}
+
+public func printNode(arena: ref parser.JsonArena, src: []u8, idx: usize, compact: bool, raw_output: bool, depth: uint): void {
+    let n = arena.node(idx)
+    match n.kind {
+        JsonKind.Null => {
+            io.println("null")
+        }
+        JsonKind.BoolTrue => {
+            io.println("true")
+        }
+        JsonKind.BoolFalse => {
+            io.println("false")
+        }
+        JsonKind.Integer => {
+            io.println("${n.int_val}")
+        }
+        JsonKind.Float => {
+            io.println("${n.float_val}")
+        }
+        JsonKind.String => {
+            let strBytes = arena.nodeStrBytes(src, idx)
+            let sLen = slice.len<u8>(strBytes)
+            let mut out = ownedStrings.String.new()
+            let mut i: usize = 0
+            while i < sLen {
+                out.pushScalar(strBytes[i] as char)
+                i = i + 1
+            }
+            if raw_output {
+                io.println(out.asStr())
+            } else {
+                io.println("\"${out.asStr()}\"")
+            }
+        }
+        JsonKind.Array => {
+            if n.child_count == 0 {
+                io.println("[]")
+                return
+            }
+            if compact {
+                io.print("[")
+                let mut ai: usize = 0
+                while ai < n.child_count {
+                    let childIdx = arena.arrayChild(idx, ai)
+                    let childNode = arena.node(childIdx)
+                    match childNode.kind {
+                        JsonKind.Integer => { io.print("${childNode.int_val}") }
+                        JsonKind.String => {
+                            let sb = arena.nodeStrBytes(src, childIdx)
+                            let sl = slice.len<u8>(sb)
+                            let mut so = ownedStrings.String.new()
+                            let mut si: usize = 0
+                            while si < sl { so.pushScalar(sb[si] as char) si = si + 1 }
+                            io.print("\"${so.asStr()}\"")
+                        }
+                        JsonKind.BoolTrue => { io.print("true") }
+                        JsonKind.BoolFalse => { io.print("false") }
+                        JsonKind.Null => { io.print("null") }
+                        _ => { io.print("...") }
+                    }
+                    if ai + 1 < n.child_count {
+                        io.print(",")
+                    }
+                    ai = ai + 1
+                }
+                io.println("]")
+            } else {
+                io.println("[")
+                let mut ai: usize = 0
+                while ai < n.child_count {
+                    printIndent(depth + 1)
+                    let childIdx = arena.arrayChild(idx, ai)
+                    printNode(arena, src, childIdx, compact, raw_output, depth + 1)
+                    ai = ai + 1
+                }
+                printIndent(depth)
+                io.println("]")
+            }
+        }
+        JsonKind.Object => {
+            if n.child_count == 0 {
+                io.println("{}")
+                return
+            }
+            io.println("{")
+            let mut oi: usize = 0
+            while oi < n.child_count {
+                let entry = arena.objectEntry(idx, oi)
+                printIndent(depth + 1)
+                match slice.subslice<u8>(src, entry.key_start, entry.key_len) {
+                    Option.Some(kb) => {
+                        let kl = slice.len<u8>(kb)
+                        let mut ko = ownedStrings.String.new()
+                        let mut ki: usize = 0
+                        while ki < kl { ko.pushScalar(kb[ki] as char) ki = ki + 1 }
+                        io.print("\"${ko.asStr()}\": ")
+                    }
+                    Option.None => {
+                        io.print("\"\": ")
+                    }
+                }
+                printNode(arena, src, entry.value_idx, compact, raw_output, depth + 1)
+                oi = oi + 1
+            }
+            printIndent(depth)
+            io.println("}")
+        }
+    }
+}

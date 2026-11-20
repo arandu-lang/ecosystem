@@ -1,0 +1,25 @@
+module engine
+
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+import std.core.str as strings
+import self.context as context
+import self.parser as parser
+import self.renderer as renderer
+
+/// High-level engine API to render a template string directly with a context.
+public func render(templateText: str, ctx: mut ref context.Context): ownedStrings.String {
+    let bytes = templateText.asBytes()
+    let compiledAst = bytes |> parser.compileTemplate()
+    let renderedBytes = renderer.renderTemplate(ref compiledAst, bytes, ctx)
+
+    let mut result = ownedStrings.String.new()
+    let s = renderedBytes.asSlice()
+    let mut i: usize = 0
+    while i < s.len {
+        result.pushScalar(s[i] as char)
+        i = i + 1
+    }
+    return result
+}

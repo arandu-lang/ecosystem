@@ -1,0 +1,666 @@
+//! Arquivo gerado automaticamente pelo c2arandu
+//! Baseado na arquitetura Dual-Locus & OSSA da linguagem Arandu.
+
+// --- Tipos de Sistema C C-ABI ---
+@Repr("C")
+public struct FILE {}
+
+@Repr("C")
+public struct Tm {
+    public tmSec: int,
+    public tmMin: int,
+    public tmHour: int,
+    public tmMday: int,
+    public tmMon: int,
+    public tmYear: int,
+    public tmWday: int,
+    public tmYday: int,
+    public tmIsdst: int,
+}
+
+public type TimeT = i64
+
+@Repr("C")
+public struct AnonTransferInfo {
+    public ftransfer: u16,
+    public ntransfer: u16,
+}
+
+@Repr("C")
+public struct AnonCallInfoC {
+    public ctx: LuaKContext,
+    public k: LuaKFunction,
+    public oldErrfunc: isize,
+}
+
+@Repr("C")
+public struct AnonCallInfoL {
+    public nextraargs: int,
+    public savedpc: ptr[Instruction],
+    public trap: u8,
+}
+
+@Repr("C")
+public struct AnonInd {
+    public idx: i16,
+    public t: u8,
+}
+
+@Repr("C")
+public struct AnonOpen {
+    public next: ptr[u8],
+    public previous: ptr[u8],
+}
+
+@Repr("C")
+public struct AnonVar {
+    public ridx: u8,
+    public vidx: i16,
+}
+
+@Repr("C")
+public union AnonymousStruct {
+    public dummy: int,
+    public arr: [64]usize,
+    public b: int,
+    public c: AnonCallInfoC,
+    public delta: u16,
+    public funcidx: int,
+    public hnext: int,
+    public ind: AnonInd,
+    public info: int,
+    public ival: i64,
+    public k: int,
+    public keyTt: u8,
+    public keyVal: Value,
+    public kind: u8,
+    public l: AnonCallInfoL,
+    public lnglen: usize,
+    public metatable: ptr[Table],
+    public n: int,
+    public name: ptr[TString],
+    public next: int,
+    public nres: int,
+    public nval: f64,
+    public nyield: int,
+    public offset: isize,
+    public open: AnonOpen,
+    public p: ptr[u8],
+    public pidx: int,
+    public ridx: int,
+    public size: usize,
+    public strval: ptr[u8],
+    public transferinfo: AnonTransferInfo,
+    public u: usize,
+    public value: usize,
+    public var: AnonVar,
+    public init: ptr[u8],
+    public len: isize,
+}
+
+// --- Typedefs e Aliases C ---
+public type MzUlong = u64
+public type MzAllocFunc = (func(ptr[u8], usize, usize) ptr[u8])?
+public type MzFreeFunc = (func(ptr[u8], ptr[u8]))?
+public type MzReallocFunc = (func(ptr[u8], ptr[u8], usize, usize) ptr[u8])?
+public type MzStream = MzStreamS
+public type MzStreamp = ptr[MzStream]
+public type Byte = u8
+public type UInt = uint
+public type ULong = u64
+public type Bytef = Byte
+public type UIntf = UInt
+public type Charf = i8
+public type Intf = int
+public type Voidpf = ptr[u8]
+public type ULongf = ULong
+public type Voidp = ptr[u8]
+public type Voidpc = ptr[u8]
+public type AllocFunc = (func(ptr[u8], usize, usize) ptr[u8])?
+public type FreeFunc = (func(ptr[u8], ptr[u8]))?
+public type MzUint8 = u8
+public type MzInt16 = i16
+public type MzUint16 = u16
+public type MzUint32 = u32
+public type MzUint = u32
+public type MzInt64 = i64
+public type MzUint64 = u64
+public type MzBool = int
+public type TdeflPutBufFuncPtr = (func(ptr[u8], int, ptr[u8]) bool)?
+public type TdeflStatus = int
+public type TdeflFlush = int
+public type TinflPutBufFuncPtr = (func(ptr[u8], int, ptr[u8]) int)?
+public type TinflDecompressor = TinflDecompressorTag
+public type TinflStatus = int
+public type TinflBitBufT = u64
+public type MzFileReadFunc = (func(ptr[u8], u64, ptr[u8], usize) usize)?
+public type MzFileWriteFunc = (func(ptr[u8], u64, ptr[u8], usize) usize)?
+public type MzFileNeedsKeepalive = (func(ptr[u8]) bool)?
+public type MzZipInternalState = MzZipInternalStateTag
+public type MzZipMode = int
+public type MzZipFlags = int
+public type MzZipType = int
+public type MzZipError = int
+
+// --- Enums e Constantes C ---
+public const MZ_DEFAULT_STRATEGY = 0
+public const MZ_FILTERED = 1
+public const MZ_HUFFMAN_ONLY = 2
+public const MZ_RLE = 3
+public const MZ_FIXED = 4
+public const MZ_NO_COMPRESSION = 0
+public const MZ_BEST_SPEED = 1
+public const MZ_BEST_COMPRESSION = 9
+public const MZ_UBER_COMPRESSION = 10
+public const MZ_DEFAULT_LEVEL = 6
+public const MZ_DEFAULT_COMPRESSION = -1
+public const MZ_NO_FLUSH = 0
+public const MZ_PARTIAL_FLUSH = 1
+public const MZ_SYNC_FLUSH = 2
+public const MZ_FULL_FLUSH = 3
+public const MZ_FINISH = 4
+public const MZ_BLOCK = 5
+public const MZ_OK = 0
+public const MZ_STREAM_END = 1
+public const MZ_NEED_DICT = 2
+public const MZ_ERRNO = -1
+public const MZ_STREAM_ERROR = -2
+public const MZ_DATA_ERROR = -3
+public const MZ_MEM_ERROR = -4
+public const MZ_BUF_ERROR = -5
+public const MZ_VERSION_ERROR = -6
+public const MZ_PARAM_ERROR = -10000
+public const TDEFL_HUFFMAN_ONLY = 0
+public const TDEFL_DEFAULT_MAX_PROBES = 128
+public const TDEFL_MAX_PROBES_MASK = 4095
+public const TDEFL_WRITE_ZLIB_HEADER = 4096
+public const TDEFL_COMPUTE_ADLER32 = 8192
+public const TDEFL_GREEDY_PARSING_FLAG = 16384
+public const TDEFL_NONDETERMINISTIC_PARSING_FLAG = 32768
+public const TDEFL_RLE_MATCHES = 65536
+public const TDEFL_FILTER_MATCHES = 131072
+public const TDEFL_FORCE_ALL_STATIC_BLOCKS = 262144
+public const TDEFL_FORCE_ALL_RAW_BLOCKS = 524288
+public const TDEFL_MAX_HUFF_TABLES = 3
+public const TDEFL_MAX_HUFF_SYMBOLS_0 = 288
+public const TDEFL_MAX_HUFF_SYMBOLS_1 = 32
+public const TDEFL_MAX_HUFF_SYMBOLS_2 = 19
+public const TDEFL_LZ_DICT_SIZE = 32768
+public const TDEFL_LZ_DICT_SIZE_MASK = 32767
+public const TDEFL_MIN_MATCH_LEN = 3
+public const TDEFL_MAX_MATCH_LEN = 258
+public const TDEFL_LZ_CODE_BUF_SIZE = 65536
+public const TDEFL_OUT_BUF_SIZE = 85196
+public const TDEFL_MAX_HUFF_SYMBOLS = 288
+public const TDEFL_LZ_HASH_BITS = 15
+public const TDEFL_LEVEL1_HASH_SIZE_MASK = 4095
+public const TDEFL_LZ_HASH_SHIFT = 5
+public const TDEFL_LZ_HASH_SIZE = 32768
+public const TDEFL_STATUS_BAD_PARAM = -2
+public const TDEFL_STATUS_PUT_BUF_FAILED = -1
+public const TDEFL_STATUS_OKAY = 0
+public const TDEFL_STATUS_DONE = 1
+public const TDEFL_NO_FLUSH = 0
+public const TDEFL_SYNC_FLUSH = 2
+public const TDEFL_FULL_FLUSH = 3
+public const TDEFL_FINISH = 4
+public const TINFL_FLAG_PARSE_ZLIB_HEADER = 1
+public const TINFL_FLAG_HAS_MORE_INPUT = 2
+public const TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF = 4
+public const TINFL_FLAG_COMPUTE_ADLER32 = 8
+public const TINFL_STATUS_FAILED_CANNOT_MAKE_PROGRESS = -4
+public const TINFL_STATUS_BAD_PARAM = -3
+public const TINFL_STATUS_ADLER32_MISMATCH = -2
+public const TINFL_STATUS_FAILED = -1
+public const TINFL_STATUS_DONE = 0
+public const TINFL_STATUS_NEEDS_MORE_INPUT = 1
+public const TINFL_STATUS_HAS_MORE_OUTPUT = 2
+public const TINFL_MAX_HUFF_TABLES = 3
+public const TINFL_MAX_HUFF_SYMBOLS_0 = 288
+public const TINFL_MAX_HUFF_SYMBOLS_1 = 32
+public const TINFL_MAX_HUFF_SYMBOLS_2 = 19
+public const TINFL_FAST_LOOKUP_BITS = 10
+public const TINFL_FAST_LOOKUP_SIZE = 1024
+public const MZ_ZIP_MAX_IO_BUF_SIZE = 65536
+public const MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE = 512
+public const MZ_ZIP_MAX_ARCHIVE_FILE_COMMENT_SIZE = 512
+public const MZ_ZIP_MODE_INVALID = 0
+public const MZ_ZIP_MODE_READING = 1
+public const MZ_ZIP_MODE_WRITING = 2
+public const MZ_ZIP_MODE_WRITING_HAS_BEEN_FINALIZED = 3
+public const MZ_ZIP_FLAG_CASE_SENSITIVE = 256
+public const MZ_ZIP_FLAG_IGNORE_PATH = 512
+public const MZ_ZIP_FLAG_COMPRESSED_DATA = 1024
+public const MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY = 2048
+public const MZ_ZIP_FLAG_VALIDATE_LOCATE_FILE_FLAG = 4096
+public const MZ_ZIP_FLAG_VALIDATE_HEADERS_ONLY = 8192
+public const MZ_ZIP_FLAG_WRITE_ZIP64 = 16384
+public const MZ_ZIP_FLAG_WRITE_ALLOW_READING = 32768
+public const MZ_ZIP_FLAG_ASCII_FILENAME = 65536
+public const MZ_ZIP_FLAG_WRITE_HEADER_SET_SIZE = 131072
+public const MZ_ZIP_FLAG_READ_ALLOW_WRITING = 262144
+public const MZ_ZIP_TYPE_INVALID = 0
+public const MZ_ZIP_TYPE_USER = 1
+public const MZ_ZIP_TYPE_MEMORY = 2
+public const MZ_ZIP_TYPE_HEAP = 3
+public const MZ_ZIP_TYPE_FILE = 4
+public const MZ_ZIP_TYPE_CFILE = 5
+public const MZ_ZIP_TOTAL_TYPES = 6
+public const MZ_ZIP_NO_ERROR = 0
+public const MZ_ZIP_UNDEFINED_ERROR = 1
+public const MZ_ZIP_TOO_MANY_FILES = 2
+public const MZ_ZIP_FILE_TOO_LARGE = 3
+public const MZ_ZIP_UNSUPPORTED_METHOD = 4
+public const MZ_ZIP_UNSUPPORTED_ENCRYPTION = 5
+public const MZ_ZIP_UNSUPPORTED_FEATURE = 6
+public const MZ_ZIP_FAILED_FINDING_CENTRAL_DIR = 7
+public const MZ_ZIP_NOT_AN_ARCHIVE = 8
+public const MZ_ZIP_INVALID_HEADER_OR_CORRUPTED = 9
+public const MZ_ZIP_UNSUPPORTED_MULTIDISK = 10
+public const MZ_ZIP_DECOMPRESSION_FAILED = 11
+public const MZ_ZIP_COMPRESSION_FAILED = 12
+public const MZ_ZIP_UNEXPECTED_DECOMPRESSED_SIZE = 13
+public const MZ_ZIP_CRC_CHECK_FAILED = 14
+public const MZ_ZIP_UNSUPPORTED_CDIR_SIZE = 15
+public const MZ_ZIP_ALLOC_FAILED = 16
+public const MZ_ZIP_FILE_OPEN_FAILED = 17
+public const MZ_ZIP_FILE_CREATE_FAILED = 18
+public const MZ_ZIP_FILE_WRITE_FAILED = 19
+public const MZ_ZIP_FILE_READ_FAILED = 20
+public const MZ_ZIP_FILE_CLOSE_FAILED = 21
+public const MZ_ZIP_FILE_SEEK_FAILED = 22
+public const MZ_ZIP_FILE_STAT_FAILED = 23
+public const MZ_ZIP_INVALID_PARAMETER = 24
+public const MZ_ZIP_INVALID_FILENAME = 25
+public const MZ_ZIP_BUF_TOO_SMALL = 26
+public const MZ_ZIP_INTERNAL_ERROR = 27
+public const MZ_ZIP_FILE_NOT_FOUND = 28
+public const MZ_ZIP_ARCHIVE_TOO_LARGE = 29
+public const MZ_ZIP_VALIDATION_FAILED = 30
+public const MZ_ZIP_WRITE_CALLBACK_FAILED = 31
+public const MZ_ZIP_TOTAL_ERRORS = 32
+
+// --- Estruturas e Uniões C (@Repr("C")) ---
+@Repr("C")
+public struct MzInternalState {
+}
+
+@Repr("C")
+public struct MzStreamS {
+    public nextIn: ptr[u8],
+    public availIn: uint,
+    public totalIn: u64,
+    public nextOut: ptr[u8],
+    public availOut: uint,
+    public totalOut: u64,
+    public msg: ptr[u8],
+    public state: ptr[MzInternalState],
+    public zalloc: MzAllocFunc,
+    public zfree: MzFreeFunc,
+    public opaque: ptr[u8],
+    public dataType: int,
+    public adler: u64,
+    public reserved: u64,
+}
+
+@Repr("C")
+public struct TdeflCompressor {
+    public pPutBufFunc: TdeflPutBufFuncPtr,
+    public pPutBufUser: ptr[u8],
+    public flags: u32,
+    public maxProbes: [2]u32,
+    public greedyParsing: int,
+    public adler32: u32,
+    public lookaheadPos: u32,
+    public lookaheadSize: u32,
+    public dictSize: u32,
+    public pLZCodeBuf: ptr[u8],
+    public pLZFlags: ptr[u8],
+    public pOutputBuf: ptr[u8],
+    public pOutputBufEnd: ptr[u8],
+    public numFlagsLeft: u32,
+    public totalLzBytes: u32,
+    public lzCodeBufDictPos: u32,
+    public bitsIn: u32,
+    public bitBuffer: u32,
+    public savedMatchDist: u32,
+    public savedMatchLen: u32,
+    public savedLit: u32,
+    public outputFlushOfs: u32,
+    public outputFlushRemaining: u32,
+    public finished: u32,
+    public blockIndex: u32,
+    public wantsToFinish: u32,
+    public prevReturnStatus: TdeflStatus,
+    public pInBuf: ptr[u8],
+    public pOutBuf: ptr[u8],
+    public pInBufSize: ptr[usize],
+    public pOutBufSize: ptr[usize],
+    public flush: TdeflFlush,
+    public pSrc: ptr[u8],
+    public srcBufLeft: usize,
+    public outBufOfs: usize,
+    public dict: [33025]u8,
+    public huffCount: [3][288]u16,
+    public huffCodes: [3][288]u16,
+    public huffCodeSizes: [3][288]u8,
+    public lzCodeBuf: [65536]u8,
+    public next: [32768]u16,
+    public hash: [32768]u16,
+    public outputBuf: [85196]u8,
+}
+
+@Repr("C")
+public struct TinflDecompressorTag {
+    public state: u32,
+    public numBits: u32,
+    public zhdr0: u32,
+    public zhdr1: u32,
+    public zAdler32: u32,
+    public final: u32,
+    public typeVal: u32,
+    public checkAdler32: u32,
+    public dist: u32,
+    public counter: u32,
+    public numExtra: u32,
+    public tableSizes: [3]u32,
+    public bitBuf: TinflBitBufT,
+    public distFromOutBufStart: usize,
+    public lookUp: [3][1024]i16,
+    public tree0: [576]i16,
+    public tree1: [64]i16,
+    public tree2: [38]i16,
+    public codeSize0: [288]u8,
+    public codeSize1: [32]u8,
+    public codeSize2: [19]u8,
+    public rawHeader: [4]u8,
+    public lenCodes: [457]u8,
+}
+
+@Repr("C")
+public struct MzZipArchiveFileStat {
+    public fileIndex: u32,
+    public centralDirOfs: u64,
+    public versionMadeBy: u16,
+    public versionNeeded: u16,
+    public bitFlag: u16,
+    public method: u16,
+    public crc32: u32,
+    public compSize: u64,
+    public uncompSize: u64,
+    public internalAttr: u16,
+    public externalAttr: u32,
+    public localHeaderOfs: u64,
+    public commentSize: u32,
+    public isDirectory: bool,
+    public isEncrypted: bool,
+    public isSupported: bool,
+    public filename: [512]i8,
+    public comment: [512]i8,
+    public time: TimeT,
+}
+
+@Repr("C")
+public struct MzZipInternalStateTag {
+}
+
+@Repr("C")
+public struct MzZipArchive {
+    public archiveSize: u64,
+    public centralDirectoryFileOfs: u64,
+    public totalFiles: u32,
+    public zipMode: MzZipMode,
+    public zipType: MzZipType,
+    public lastError: MzZipError,
+    public fileOffsetAlignment: u64,
+    public pAlloc: MzAllocFunc,
+    public pFree: MzFreeFunc,
+    public pRealloc: MzReallocFunc,
+    public pAllocOpaque: ptr[u8],
+    public pRead: MzFileReadFunc,
+    public pWrite: MzFileWriteFunc,
+    public pNeedsKeepalive: MzFileNeedsKeepalive,
+    public pIOOpaque: ptr[u8],
+    public pState: ptr[MzZipInternalState],
+}
+
+@Repr("C")
+public struct MzZipReaderExtractIterState {
+    public pZip: ptr[MzZipArchive],
+    public flags: u32,
+    public status: int,
+    public readBufSize: u64,
+    public readBufOfs: u64,
+    public readBufAvail: u64,
+    public compRemaining: u64,
+    public outBufOfs: u64,
+    public curFileOfs: u64,
+    public fileStat: MzZipArchiveFileStat,
+    public pReadBuf: ptr[u8],
+    public pWriteBuf: ptr[u8],
+    public outBlkRemain: usize,
+    public inflator: TinflDecompressor,
+    public fileCrc32: u32,
+}
+
+// --- Assinaturas de Funções Externas C (libc & POSIX) ---
+extern "C" {
+    func memset(dest: ptr[u8], val: int, len: usize): ptr[u8]
+    func memcpy(dest: ptr[u8], src: ptr[u8], len: usize): ptr[u8]
+    func memcmp(s1: ptr[u8], s2: ptr[u8], n: usize): int
+    func malloc(size: usize): ptr[u8]
+    func free(ptr_val: ptr[u8])
+    func realloc(ptr_val: ptr[u8], size: usize): ptr[u8]
+    func strlen(s: ptr[i8]): usize
+    func strcmp(s1: ptr[i8], s2: ptr[i8]): int
+    func strncmp(s1: ptr[i8], s2: ptr[i8], n: usize): int
+    func strchr(s: ptr[i8], c: int): ptr[i8]
+    func strrchr(s: ptr[i8], c: int): ptr[i8]
+    func strstr(haystack: ptr[i8], needle: ptr[i8]): ptr[i8]
+    func strpbrk(s: ptr[i8], accept: ptr[i8]): ptr[i8]
+    func strspn(s: ptr[i8], accept: ptr[i8]): usize
+    func strcspn(s: ptr[i8], reject: ptr[i8]): usize
+    func memchr(s: ptr[u8], c: int, n: usize): ptr[u8]
+    func strtol(nptr: ptr[i8], endptr: ptr[ptr[i8]], base: int): i64
+    func strtod(nptr: ptr[i8], endptr: ptr[ptr[i8]]): f64
+    func strcpy(dest: ptr[i8], src: ptr[i8]): ptr[i8]
+    func strncpy(dest: ptr[i8], src: ptr[i8], n: usize): ptr[i8]
+    func strcat(dest: ptr[i8], src: ptr[i8]): ptr[i8]
+    func strcoll(s1: ptr[i8], s2: ptr[i8]): int
+    func localeconv(): ptr[Lconv]
+    func snprintf(str_buf: ptr[i8], size: usize, format: ptr[i8], args: any...): int
+    func sprintf(str_buf: ptr[i8], format: ptr[i8], args: any...): int
+    func fprintf(stream: ptr[FILE], format: ptr[i8], args: any...): int
+    func printf(format: ptr[i8], args: any...): int
+    func sscanf(s: ptr[i8], format: ptr[i8], args: any...): int
+    func fopen(filename: ptr[i8], mode: ptr[i8]): ptr[FILE]
+    func fclose(stream: ptr[FILE]): int
+    func fseek(stream: ptr[FILE], offset: i64, whence: int): int
+    func ftell(stream: ptr[FILE]): i64
+    func fread(ptr_val: ptr[u8], size: usize, nmemb: usize, stream: ptr[FILE]): usize
+    func fwrite(ptr_val: ptr[u8], size: usize, nmemb: usize, stream: ptr[FILE]): usize
+    func fgetc(stream: ptr[FILE]): int
+    func ungetc(c: int, stream: ptr[FILE]): int
+    func feof(stream: ptr[FILE]): int
+    func ferror(stream: ptr[FILE]): int
+    func fflush(stream: ptr[FILE]): int
+    func fgets(s: ptr[i8], size: int, stream: ptr[FILE]): ptr[i8]
+    func fputs(s: ptr[i8], stream: ptr[FILE]): int
+    func puts(s: ptr[i8]): int
+    func setvbuf(stream: ptr[FILE], buf: ptr[i8], mode: int, size: usize): int
+    func getenv(name: ptr[i8]): ptr[i8]
+    func system(command: ptr[i8]): int
+    func remove(filename: ptr[i8]): int
+    func rename(old: ptr[i8], new: ptr[i8]): int
+    func tmpfile(): ptr[FILE]
+    func tmpnam(s: ptr[i8]): ptr[i8]
+    func freopen(filename: ptr[i8], mode: ptr[i8], stream: ptr[FILE]): ptr[FILE]
+    func getc(stream: ptr[FILE]): int
+    func putc(c: int, stream: ptr[FILE]): int
+    func putchar(c: int): int
+    func getchar(): int
+    func clearerr(stream: ptr[FILE])
+    func setbuf(stream: ptr[FILE], buf: ptr[i8])
+    func clock(): i64
+    func time(tloc: ptr[i64]): i64
+    func strftime(s: ptr[i8], max: usize, format: ptr[i8], tm: ptr[Tm]): usize
+    func localtime(timer: ptr[TimeT]): ptr[Tm]
+    func gmtime(timer: ptr[TimeT]): ptr[Tm]
+    func difftime(time1: TimeT, time0: TimeT): f64
+    func mktime(tm: ptr[Tm]): TimeT
+    func setlocale(category: int, locale: ptr[i8]): ptr[i8]
+    func signal(signum: int, handler: ptr[u8]): ptr[u8]
+    func raise(signum: int): int
+    func ctypeBLoc(): ptr[ptr[u16]]
+    func toupper(c: int): int
+    func tolower(c: int): int
+    func isalnum(c: int): int
+    func isalpha(c: int): int
+    func isdigit(c: int): int
+    func isspace(c: int): int
+    func iscntrl(c: int): int
+    func ispunct(c: int): int
+    func isxdigit(c: int): int
+    func abs(n: int): int
+    func fabs(x: f64): f64
+    func log2(x: f64): f64
+    func pow(base: f64, exp: f64): f64
+    func ldexp(x: f64, exp: int): f64
+    func floor(x: f64): f64
+    func ceil(x: f64): f64
+    func fmod(x: f64, y: f64): f64
+    func sqrt(x: f64): f64
+    func log(x: f64): f64
+    func log10(x: f64): f64
+    func exp(x: f64): f64
+    func sin(x: f64): f64
+    func cos(x: f64): f64
+    func tan(x: f64): f64
+    func asin(x: f64): f64
+    func acos(x: f64): f64
+    func atan(x: f64): f64
+    func atan2(y: f64, x: f64): f64
+    func frexp(x: f64, exp: ptr[int]): f64
+    func strerror(errnum: int): ptr[i8]
+    func errnoLocation(): ptr[int]
+    func setjmp(env: ptr[usize]): int
+    func longjmp(env: ptr[usize], val: int)
+    func abort()
+    func exit(status: int)
+    func mzFree(p: ptr[u8])
+    func mzAdler32(adler: u64, ptrVal: ptr[u8], bufLen: usize): u64
+    func mzCrc32(crc: u64, ptrVal: ptr[u8], bufLen: usize): u64
+    func mzVersion(): ptr[u8]
+    func mzDeflateInit(pStream: MzStreamp, level: int): int
+    func mzDeflateInit2(pStream: MzStreamp, level: int, method: int, windowBits: int, memLevel: int, strategy: int): int
+    func mzDeflateReset(pStream: MzStreamp): int
+    func mzDeflate(pStream: MzStreamp, flush: int): int
+    func mzDeflateEnd(pStream: MzStreamp): int
+    func mzDeflateBound(pStream: MzStreamp, sourceLen: u64): u64
+    func mzCompress(pDest: ptr[u8], pDestLen: ptr[u64], pSource: ptr[u8], sourceLen: u64): int
+    func mzCompress2(pDest: ptr[u8], pDestLen: ptr[u64], pSource: ptr[u8], sourceLen: u64, level: int): int
+    func mzCompressBound(sourceLen: u64): u64
+    func mzInflateInit(pStream: MzStreamp): int
+    func mzInflateInit2(pStream: MzStreamp, windowBits: int): int
+    func mzInflateReset(pStream: MzStreamp): int
+    func mzInflate(pStream: MzStreamp, flush: int): int
+    func mzInflateEnd(pStream: MzStreamp): int
+    func mzUncompress(pDest: ptr[u8], pDestLen: ptr[u64], pSource: ptr[u8], sourceLen: u64): int
+    func mzUncompress2(pDest: ptr[u8], pDestLen: ptr[u64], pSource: ptr[u8], pSourceLen: ptr[u64]): int
+    func mzError(err: int): ptr[u8]
+    func minizDefAllocFunc(opaque: ptr[u8], items: usize, size: usize): ptr[u8]
+    func minizDefFreeFunc(opaque: ptr[u8], address: ptr[u8])
+    func minizDefReallocFunc(opaque: ptr[u8], address: ptr[u8], items: usize, size: usize): ptr[u8]
+    func tdeflCompressMemToHeap(pSrcBuf: ptr[u8], srcBufLen: usize, pOutLen: ptr[usize], flags: int): ptr[u8]
+    func tdeflCompressMemToMem(pOutBuf: ptr[u8], outBufLen: usize, pSrcBuf: ptr[u8], srcBufLen: usize, flags: int): usize
+    func tdeflWriteImageToPngFileInMemoryEx(pImage: ptr[u8], w: int, h: int, numChans: int, pLenOut: ptr[usize], level: u32, flip: bool): ptr[u8]
+    func tdeflWriteImageToPngFileInMemory(pImage: ptr[u8], w: int, h: int, numChans: int, pLenOut: ptr[usize]): ptr[u8]
+    func tdeflCompressMemToOutput(pBuf: ptr[u8], bufLen: usize, pPutBufFunc: TdeflPutBufFuncPtr, pPutBufUser: ptr[u8], flags: int): bool
+    func tdeflInit(d: ptr[TdeflCompressor], pPutBufFunc: TdeflPutBufFuncPtr, pPutBufUser: ptr[u8], flags: int): TdeflStatus
+    func tdeflCompress(d: ptr[TdeflCompressor], pInBuf: ptr[u8], pInBufSize: ptr[usize], pOutBuf: ptr[u8], pOutBufSize: ptr[usize], flush: TdeflFlush): TdeflStatus
+    func tdeflCompressBuffer(d: ptr[TdeflCompressor], pInBuf: ptr[u8], inBufSize: usize, flush: TdeflFlush): TdeflStatus
+    func tdeflGetPrevReturnStatus(d: ptr[TdeflCompressor]): TdeflStatus
+    func tdeflGetAdler32(d: ptr[TdeflCompressor]): u32
+    func tdeflCreateCompFlagsFromZipParams(level: int, windowBits: int, strategy: int): u32
+    func tdeflCompressorAlloc(): ptr[TdeflCompressor]
+    func tdeflCompressorFree(pComp: ptr[TdeflCompressor])
+    func tinflDecompressMemToHeap(pSrcBuf: ptr[u8], srcBufLen: usize, pOutLen: ptr[usize], flags: int): ptr[u8]
+    func tinflDecompressMemToMem(pOutBuf: ptr[u8], outBufLen: usize, pSrcBuf: ptr[u8], srcBufLen: usize, flags: int): usize
+    func tinflDecompressMemToCallback(pInBuf: ptr[u8], pInBufSize: ptr[usize], pPutBufFunc: TinflPutBufFuncPtr, pPutBufUser: ptr[u8], flags: int): int
+    func tinflDecompressorAlloc(): ptr[TinflDecompressor]
+    func tinflDecompressorFree(pDecomp: ptr[TinflDecompressor])
+    func tinflDecompress(r: ptr[TinflDecompressor], pInBufNext: ptr[u8], pInBufSize: ptr[usize], pOutBufStart: ptr[u8], pOutBufNext: ptr[u8], pOutBufSize: ptr[usize], decompFlags: u32): TinflStatus
+    func mzZipReaderInit(pZip: ptr[MzZipArchive], size: u64, flags: u32): bool
+    func mzZipReaderInitMem(pZip: ptr[MzZipArchive], pMem: ptr[u8], size: usize, flags: u32): bool
+    func mzZipReaderInitFile(pZip: ptr[MzZipArchive], pFilename: ptr[u8], flags: u32): bool
+    func mzZipReaderInitFileV2(pZip: ptr[MzZipArchive], pFilename: ptr[u8], flags: u32, fileStartOfs: u64, archiveSize: u64): bool
+    func mzZipReaderInitCfile(pZip: ptr[MzZipArchive], pFile: ptr[FILE], archiveSize: u64, flags: u32): bool
+    func mzZipReaderEnd(pZip: ptr[MzZipArchive]): bool
+    func mzZipZeroStruct(pZip: ptr[MzZipArchive])
+    func mzZipGetMode(pZip: ptr[MzZipArchive]): MzZipMode
+    func mzZipGetType(pZip: ptr[MzZipArchive]): MzZipType
+    func mzZipReaderGetNumFiles(pZip: ptr[MzZipArchive]): u32
+    func mzZipGetArchiveSize(pZip: ptr[MzZipArchive]): u64
+    func mzZipGetArchiveFileStartOffset(pZip: ptr[MzZipArchive]): u64
+    func mzZipGetCfile(pZip: ptr[MzZipArchive]): ptr[FILE]
+    func mzZipReadArchiveData(pZip: ptr[MzZipArchive], fileOfs: u64, pBuf: ptr[u8], n: usize): usize
+    func mzZipSetLastError(pZip: ptr[MzZipArchive], errNum: MzZipError): MzZipError
+    func mzZipPeekLastError(pZip: ptr[MzZipArchive]): MzZipError
+    func mzZipClearLastError(pZip: ptr[MzZipArchive]): MzZipError
+    func mzZipGetLastError(pZip: ptr[MzZipArchive]): MzZipError
+    func mzZipGetErrorString(mzErr: MzZipError): ptr[u8]
+    func mzZipReaderIsFileADirectory(pZip: ptr[MzZipArchive], fileIndex: u32): bool
+    func mzZipReaderIsFileEncrypted(pZip: ptr[MzZipArchive], fileIndex: u32): bool
+    func mzZipReaderIsFileSupported(pZip: ptr[MzZipArchive], fileIndex: u32): bool
+    func mzZipReaderGetFilename(pZip: ptr[MzZipArchive], fileIndex: u32, pFilename: ptr[u8], filenameBufSize: u32): u32
+    func mzZipReaderLocateFile(pZip: ptr[MzZipArchive], pName: ptr[u8], pComment: ptr[u8], flags: u32): int
+    func mzZipReaderLocateFileV2(pZip: ptr[MzZipArchive], pName: ptr[u8], pComment: ptr[u8], flags: u32, fileIndex: ptr[u32]): bool
+    func mzZipReaderFileStat(pZip: ptr[MzZipArchive], fileIndex: u32, pStat: ptr[MzZipArchiveFileStat]): bool
+    func mzZipIsZip64(pZip: ptr[MzZipArchive]): bool
+    func mzZipGetCentralDirSize(pZip: ptr[MzZipArchive]): usize
+    func mzZipReaderExtractToMemNoAlloc(pZip: ptr[MzZipArchive], fileIndex: u32, pBuf: ptr[u8], bufSize: usize, flags: u32, pUserReadBuf: ptr[u8], userReadBufSize: usize): bool
+    func mzZipReaderExtractFileToMemNoAlloc(pZip: ptr[MzZipArchive], pFilename: ptr[u8], pBuf: ptr[u8], bufSize: usize, flags: u32, pUserReadBuf: ptr[u8], userReadBufSize: usize): bool
+    func mzZipReaderExtractToMem(pZip: ptr[MzZipArchive], fileIndex: u32, pBuf: ptr[u8], bufSize: usize, flags: u32): bool
+    func mzZipReaderExtractFileToMem(pZip: ptr[MzZipArchive], pFilename: ptr[u8], pBuf: ptr[u8], bufSize: usize, flags: u32): bool
+    func mzZipReaderExtractToHeap(pZip: ptr[MzZipArchive], fileIndex: u32, pSize: ptr[usize], flags: u32): ptr[u8]
+    func mzZipReaderExtractFileToHeap(pZip: ptr[MzZipArchive], pFilename: ptr[u8], pSize: ptr[usize], flags: u32): ptr[u8]
+    func mzZipReaderExtractToCallback(pZip: ptr[MzZipArchive], fileIndex: u32, pCallback: MzFileWriteFunc, pOpaque: ptr[u8], flags: u32): bool
+    func mzZipReaderExtractFileToCallback(pZip: ptr[MzZipArchive], pFilename: ptr[u8], pCallback: MzFileWriteFunc, pOpaque: ptr[u8], flags: u32): bool
+    func mzZipReaderExtractIterNew(pZip: ptr[MzZipArchive], fileIndex: u32, flags: u32): ptr[MzZipReaderExtractIterState]
+    func mzZipReaderExtractFileIterNew(pZip: ptr[MzZipArchive], pFilename: ptr[u8], flags: u32): ptr[MzZipReaderExtractIterState]
+    func mzZipReaderExtractIterRead(pState: ptr[MzZipReaderExtractIterState], pvBuf: ptr[u8], bufSize: usize): usize
+    func mzZipReaderExtractIterFree(pState: ptr[MzZipReaderExtractIterState]): bool
+    func mzZipReaderExtractToFile(pZip: ptr[MzZipArchive], fileIndex: u32, pDstFilename: ptr[u8], flags: u32): bool
+    func mzZipReaderExtractFileToFile(pZip: ptr[MzZipArchive], pArchiveFilename: ptr[u8], pDstFilename: ptr[u8], flags: u32): bool
+    func mzZipReaderExtractToCfile(pZip: ptr[MzZipArchive], fileIndex: u32, file: ptr[FILE], flags: u32): bool
+    func mzZipReaderExtractFileToCfile(pZip: ptr[MzZipArchive], pArchiveFilename: ptr[u8], pFile: ptr[FILE], flags: u32): bool
+    func mzZipValidateFile(pZip: ptr[MzZipArchive], fileIndex: u32, flags: u32): bool
+    func mzZipValidateArchive(pZip: ptr[MzZipArchive], flags: u32): bool
+    func mzZipValidateMemArchive(pMem: ptr[u8], size: usize, flags: u32, pErr: ptr[MzZipError]): bool
+    func mzZipValidateFileArchive(pFilename: ptr[u8], flags: u32, pErr: ptr[MzZipError]): bool
+    func mzZipEnd(pZip: ptr[MzZipArchive]): bool
+    func mzZipWriterInit(pZip: ptr[MzZipArchive], existingSize: u64): bool
+    func mzZipWriterInitV2(pZip: ptr[MzZipArchive], existingSize: u64, flags: u32): bool
+    func mzZipWriterInitHeap(pZip: ptr[MzZipArchive], sizeToReserveAtBeginning: usize, initialAllocationSize: usize): bool
+    func mzZipWriterInitHeapV2(pZip: ptr[MzZipArchive], sizeToReserveAtBeginning: usize, initialAllocationSize: usize, flags: u32): bool
+    func mzZipWriterInitFile(pZip: ptr[MzZipArchive], pFilename: ptr[u8], sizeToReserveAtBeginning: u64): bool
+    func mzZipWriterInitFileV2(pZip: ptr[MzZipArchive], pFilename: ptr[u8], sizeToReserveAtBeginning: u64, flags: u32): bool
+    func mzZipWriterInitCfile(pZip: ptr[MzZipArchive], pFile: ptr[FILE], flags: u32): bool
+    func mzZipWriterInitFromReader(pZip: ptr[MzZipArchive], pFilename: ptr[u8]): bool
+    func mzZipWriterInitFromReaderV2(pZip: ptr[MzZipArchive], pFilename: ptr[u8], flags: u32): bool
+    func mzZipWriterAddMem(pZip: ptr[MzZipArchive], pArchiveName: ptr[u8], pBuf: ptr[u8], bufSize: usize, levelAndFlags: u32): bool
+    func mzZipWriterAddMemEx(pZip: ptr[MzZipArchive], pArchiveName: ptr[u8], pBuf: ptr[u8], bufSize: usize, pComment: ptr[u8], commentSize: u16, levelAndFlags: u32, uncompSize: u64, uncompCrc32: u32): bool
+    func mzZipWriterAddMemExV2(pZip: ptr[MzZipArchive], pArchiveName: ptr[u8], pBuf: ptr[u8], bufSize: usize, pComment: ptr[u8], commentSize: u16, levelAndFlags: u32, uncompSize: u64, uncompCrc32: u32, lastModified: ptr[TimeT], userExtraDataLocal: ptr[u8], userExtraDataLocalLen: u32, userExtraDataCentral: ptr[u8], userExtraDataCentralLen: u32): bool
+    func mzZipWriterAddReadBufCallback(pZip: ptr[MzZipArchive], pArchiveName: ptr[u8], readCallback: MzFileReadFunc, callbackOpaque: ptr[u8], maxSize: u64, pFileTime: ptr[TimeT], pComment: ptr[u8], commentSize: u16, levelAndFlags: u32, userExtraDataLocal: ptr[u8], userExtraDataLocalLen: u32, userExtraDataCentral: ptr[u8], userExtraDataCentralLen: u32): bool
+    func mzZipWriterAddFile(pZip: ptr[MzZipArchive], pArchiveName: ptr[u8], pSrcFilename: ptr[u8], pComment: ptr[u8], commentSize: u16, levelAndFlags: u32): bool
+    func mzZipWriterAddCfile(pZip: ptr[MzZipArchive], pArchiveName: ptr[u8], pSrcFile: ptr[FILE], maxSize: u64, pFileTime: ptr[TimeT], pComment: ptr[u8], commentSize: u16, levelAndFlags: u32, userExtraDataLocal: ptr[u8], userExtraDataLocalLen: u32, userExtraDataCentral: ptr[u8], userExtraDataCentralLen: u32): bool
+    func mzZipWriterAddFromZipReader(pZip: ptr[MzZipArchive], pSourceZip: ptr[MzZipArchive], srcFileIndex: u32): bool
+    func mzZipWriterFinalizeArchive(pZip: ptr[MzZipArchive]): bool
+    func mzZipWriterFinalizeHeapArchive(pZip: ptr[MzZipArchive], ppBuf: ptr[ptr[u8]], pSize: ptr[usize]): bool
+    func mzZipWriterEnd(pZip: ptr[MzZipArchive]): bool
+    func mzZipAddMemToArchiveFileInPlace(pZipFilename: ptr[u8], pArchiveName: ptr[u8], pBuf: ptr[u8], bufSize: usize, pComment: ptr[u8], commentSize: u16, levelAndFlags: u32): bool
+    func mzZipAddMemToArchiveFileInPlaceV2(pZipFilename: ptr[u8], pArchiveName: ptr[u8], pBuf: ptr[u8], bufSize: usize, pComment: ptr[u8], commentSize: u16, levelAndFlags: u32, pErr: ptr[MzZipError]): bool
+    func mzZipExtractArchiveFileToHeap(pZipFilename: ptr[u8], pArchiveName: ptr[u8], pSize: ptr[usize], flags: u32): ptr[u8]
+    func mzZipExtractArchiveFileToHeapV2(pZipFilename: ptr[u8], pArchiveName: ptr[u8], pComment: ptr[u8], pSize: ptr[usize], flags: u32, pErr: ptr[MzZipError]): ptr[u8]
+}
+

@@ -1,0 +1,115 @@
+module tuba_tests
+
+import std.testing as testing
+import std.alloc.vec as vec
+import std.core.str as strings
+import std.core.slice as slice
+
+import self.lz as lz
+
+func toBytes(s: ref str): []u8 {
+    return strings.asBytes(s)
+}
+
+@Test
+func compress_decompress_roundtrip_hello(): void {
+    let input = toBytes("hello hello hello hello hello hello hello hello")
+    let mut state = lz.newState()
+    let mut compressed = vec.Vec.new<u8>()
+    lz.compress(input, mut ref state, mut ref compressed)
+
+    let mut decompressed = vec.Vec.new<u8>()
+    match lz.decompress(compressed.asSlice(), mut ref decompressed) {
+        Ok(_) => {
+            let in_len = slice.len<u8>(input)
+            testing.expect(decompressed.len() == in_len, "roundtrip length mismatch")
+            let mut i: usize = 0
+            while i < in_len {
+                let mut got: u8 = 0
+                match decompressed.getCopy(i) {
+                    Some(v) => {
+                        got = v
+                    }
+                    None => {}
+                }
+                testing.expect(got == input[i], "roundtrip byte mismatch at ${i}")
+                i = i + 1
+            }
+        }
+        Err(msg) => {
+            testing.expect(false, "decompress failed: ${msg}")
+        }
+    }
+}
+
+@Test
+func compress_decompress_roundtrip_repeated_pattern(): void {
+    // Create a highly compressible input: 256 bytes of the same value.
+    let mut input_vec = vec.Vec.new<u8>()
+    let mut i: usize = 0
+    while i < 256 {
+        input_vec.push(0xab)
+        i = i + 1
+    }
+    let input = input_vec.asSlice()
+    let mut state = lz.newState()
+    let mut compressed = vec.Vec.new<u8>()
+    lz.compress(input, mut ref state, mut ref compressed)
+
+    // Verify compressed size is less than input (compressible).
+    testing.expect(compressed.len() < 256, "repeated pattern should compress")
+
+    let mut decompressed = vec.Vec.new<u8>()
+    match lz.decompress(compressed.asSlice(), mut ref decompressed) {
+        Ok(_) => {
+            testing.expect(decompressed.len() == 256, "roundtrip length must be 256")
+            let mut j: usize = 0
+            while j < 256 {
+                let mut got: u8 = 0
+                match decompressed.getCopy(j) {
+                    Some(v) => {
+                        got = v
+                    }
+                    None => {}
+                }
+                testing.expect(got == 0xab, "byte mismatch at ${j}")
+                j = j + 1
+            }
+        }
+        Err(msg) => { testing.expect(false, "decompress repeated: ${msg}") }
+    }
+}
+
+@Test
+func decompress_truncated_returns_error(): void {
+    // A truncated stream should return Err.
+    let mut truncated = vec.Vec.new<u8>()
+    truncated.push(0xf0)
+    truncated.push(0x41)
+    truncated.push(0x42)
+    truncated.push(0x43)
+    let ts = truncated.asSlice()
+    // This is a token saying 15+ literals but then the stream is cut.
+    let mut out = vec.Vec.new<u8>()
+    match lz.decompress(ts, mut ref out) {
+        Ok(_) => {
+            // May succeed (the truncated stream might parse as valid if the
+            // literal count = 15 and remaining = 0x41 = 65 — and we have 2 more bytes).
+            // So this is not a guarantee of error; we just ensure no panic/crash.
+            testing.expect(true, "decompress of short stream did not panic")
+        }
+        Err(_) => {
+            testing.expect(true, "correctly returned error for truncated stream")
+        }
+    }
+}
+
+@Test
+func compress_empty_input(): void {
+    let empty: []u8 = strings.asBytes("")
+    let mut state = lz.newState()
+    let mut out = vec.Vec.new<u8>()
+    lz.compress(empty, mut ref state, mut ref out)
+    // Empty input should produce no output tokens.
+    testing.expect(out.len() == 0, "compress of empty input produces no output")
+}

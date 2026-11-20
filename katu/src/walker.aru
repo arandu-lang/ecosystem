@@ -1,0 +1,151 @@
+module walker
+
+import io
+import std.fs as fs
+import std.path as path
+import std.core.slice as slice
+import std.core.str as strings
+import std.alloc.string as ownedStrings
+
+import self.searcher as searcher
+
+/// Controls how matches are reported.
+public struct WalkOpts {
+    /// Print only the count of matches per file.
+    public count_only: bool
+    /// Print only filenames that have at least one match.
+    public files_with_matches: bool
+}
+
+/// Returns a `WalkOpts` with all flags off.
+public func defaultWalkOpts(): WalkOpts {
+    return WalkOpts {
+        count_only: false,
+        files_with_matches: false,
+    }
+}
+
+func shouldDescend(name: str, is_root: bool): bool {
+    if strings.startsWith(name, ".") {
+        return false
+    }
+    if is_root && name == "target" {
+        return false
+    }
+    return true
+}
+
+func shouldSearch(name: str): bool {
+    return !strings.startsWith(name, ".")
+}
+
+func formatLineBytes(line_bytes: []u8): ownedStrings.String {
+    let n = slice.len<u8>(line_bytes)
+    let mut out = ownedStrings.String.new()
+    let mut k: usize = 0
+    while k < n {
+        let b = line_bytes[k]
+        if b != 13 {
+            out.pushScalar(b as char)
+        }
+        k = k + 1
+    }
+    return out
+}
+
+/// Reads a file and searches for `needle`, printing results according to `walk_opts`.
+/// Returns the number of matched lines.
+@Effects(FileRead, Foreign)
+public func searchFile(
+    file_path: str,
+    needle: []u8,
+    search_opts: ref searcher.SearchOpts,
+    walk_opts: ref WalkOpts,
+): uint {
+    match fs.readToString(file_path) {
+        Ok(content) => {
+            let bytes = content.asBytes()
+            let mut matches = searcher.findMatches(bytes, needle, search_opts)
+            let count = matches.len() as uint
+
+            if count > 0 {
+                if walk_opts.files_with_matches {
+                    io.println("${file_path}")
+                } else if walk_opts.count_only {
+                    io.println("${file_path}:${count}")
+                } else {
+                    let match_slice = matches.asSlice()
+                    let mut j: usize = 0
+                    while j < matches.len() {
+                        let m = ref match_slice[j]
+                        let line_bytes = searcher.lineSlice(bytes, m.line_start, m.line_end)
+                        let line_text = formatLineBytes(line_bytes)
+                        io.println("${file_path}:${m.line}:${line_text.asStr()}")
+                        j = j + 1
+                    }
+                }
+            }
+
+            return count
+        }
+        Err(_) => {
+            io.println("katu: warn: cannot read ${file_path}")
+            return 0
+        }
+    }
+}
+
+/// Recursively walks `dir` searching every file for `needle`.
+/// Returns total number of matched lines across all files.
+@Effects(FileRead, Foreign)
+public func searchDir(
+    dir: str,
+    needle: []u8,
+    search_opts: ref searcher.SearchOpts,
+    walk_opts: ref WalkOpts,
+    is_root: bool,
+): uint {
+    let mut total: uint = 0
+    // A path may name a regular file rather than a directory. Try the file
+    // first: `readDir` fails on a plain file, and reporting that failure as
+    // "cannot read directory" would send the user looking in the wrong place.
+    if fs.fileExists(dir) {
+        let mut is_plain_file = true
+        match fs.readDir(dir) {
+            Ok(_) => { is_plain_file = false }
+            Err(_) => {}
+        }
+        if is_plain_file {
+            if shouldSearch(dir) {
+                return searchFile(dir, needle, search_opts, walk_opts)
+            }
+            return 0
+        }
+    }
+    match fs.readDir(dir) {
+        Ok(mut listing) => {
+            let n = listing.count()
+            let mut i: usize = 0
+            while i < n {
+                let is_dir = listing.isDir(i)
+                let name = listing.nameStr(i)
+                let full: ownedStrings.String = path.Path.from(dir).joinOwned(name)
+
+                if is_dir {
+                    if shouldDescend(name, is_root) {
+                        total = total + searchDir(full.asStr(), needle, search_opts, walk_opts, false)
+                    }
+                } else {
+                    if shouldSearch(name) {
+                        total = total + searchFile(full.asStr(), needle, search_opts, walk_opts)
+                    }
+                }
+                i = i + 1
+            }
+        }
+        Err(_) => {
+            io.println("katu: warn: cannot read directory ${dir}")
+        }
+    }
+    return total
+}

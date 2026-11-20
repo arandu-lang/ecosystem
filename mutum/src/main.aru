@@ -1,0 +1,257 @@
+module mutum
+
+import io
+import std.env as env
+import std.fs as fs
+import std.core.slice as slice
+import std.core.str as strings
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+
+import self.context as context
+import self.engine as engine
+
+/// Writes bytes to path using the capability-based fs API.
+@Effects(FileWrite, Foreign)
+func writeAll(path: str, bytes: []u8): bool {
+    let .Ok(_) = fs.writeBytes(path, bytes) else {
+        return false
+    }
+    return true
+}
+
+func runAllTests(): int {
+    io.println("Running mutum test suite...")
+    let mut passed: int = 0
+    let mut failed: int = 0
+
+    // Test 1: Simple Variable Interpolation
+    let mut ctx1 = context.newContext()
+    context.setStr(mut ref ctx1, "name", "Arandu")
+    context.setInt(mut ref ctx1, "year", 2026)
+    let r1 = engine.render("Hello, {{ name }} in {{ year }}!", mut ref ctx1)
+    if r1.asStr() == "Hello, Arandu in 2026!" {
+        io.println("  [PASS] simpleVariableInterpolation")
+        passed = passed + 1
+    } else {
+        io.println("  [FAIL] simpleVariableInterpolation")
+        failed = failed + 1
+    }
+
+    // Test 2: Auto-escaping HTML XSS
+    let mut ctx2 = context.newContext()
+    context.setStr(mut ref ctx2, "input", "<script>alert('xss' & 'hack')</script>")
+    let r2 = engine.render("<p>{{ input }}</p>", mut ref ctx2)
+    if r2.asStr() == "<p>&lt;script&gt;alert(&#39;xss&#39; &amp; &#39;hack&#39;)&lt;/script&gt;</p>" {
+        io.println("  [PASS] automaticHtmlXssEscaping")
+        passed = passed + 1
+    } else {
+        io.println("  [FAIL] automaticHtmlXssEscaping")
+        failed = failed + 1
+    }
+
+    // Test 3: Raw filter
+    let mut ctx3 = context.newContext()
+    context.setStr(mut ref ctx3, "html", "<b>Bold Text</b>")
+    let r3 = engine.render("Notice: {{ html | raw }}", mut ref ctx3)
+    if r3.asStr() == "Notice: <b>Bold Text</b>" {
+        io.println("  [PASS] rawFilterPreservesHtml")
+        passed = passed + 1
+    } else {
+        io.println("  [FAIL] rawFilterPreservesHtml")
+        failed = failed + 1
+    }
+
+    // Test 4: Text filters upper, lower, trim
+    let mut ctx4 = context.newContext()
+    context.setStr(mut ref ctx4, "greet", "hello world")
+    context.setStr(mut ref ctx4, "shout", "LOUD NOISE")
+    context.setStr(mut ref ctx4, "padded", "   clean me   ")
+    let r4 = engine.render("{{ greet | upper }} | {{ shout | lower }} | [{{ padded | trim }}]", mut ref ctx4)
+    if r4.asStr() == "HELLO WORLD | loud noise | [clean me]" {
+        io.println("  [PASS] textFiltersUpperLowerAndTrim")
+        passed = passed + 1
+    } else {
+        io.println("  [FAIL] textFiltersUpperLowerAndTrim")
+        failed = failed + 1
+    }
+
+    // Test 5: Default fallback
+    let mut ctx5 = context.newContext()
+    context.setStr(mut ref ctx5, "present", "Real Title")
+    let r5 = engine.render("{{ present | default('Fallback') }} and {{ absent | default('Fallback') }}", mut ref ctx5)
+    if r5.asStr() == "Real Title and Fallback" {
+        io.println("  [PASS] defaultFallbackWhenVariableMissing")
+        passed = passed + 1
+    } else {
+        io.println("  [FAIL] defaultFallbackWhenVariableMissing")
+        failed = failed + 1
+    }
+
+    // Test 6: Conditionals if/else
+    let mut ctx6 = context.newContext()
+    context.setBool(mut ref ctx6, "isOnline", true)
+    context.setBool(mut ref ctx6, "hasError", false)
+    let r6 = engine.render("{% if isOnline %}ONLINE{% else %}OFFLINE{% endif %} - {% if !hasError %}NO ERROR{% else %}ERROR{% endif %}", mut ref ctx6)
+    if r6.asStr() == "ONLINE - NO ERROR" {
+        io.println("  [PASS] conditionalIfElseBranching")
+        passed = passed + 1
+    } else {
+        io.println("  [FAIL] conditionalIfElseBranching")
+        failed = failed + 1
+    }
+
+    // Test 7: For loop and loop.index
+    let mut ctx7 = context.newContext()
+    let mut fruits = vec.Vec.new<str>()
+    fruits.push("apple")
+    fruits.push("banana")
+    fruits.push("cherry")
+    context.setList(mut ref ctx7, "fruits", fruits.asSlice())
+    let r7 = engine.render("{% for f in fruits %}[#{{ loop.index }}: {{ f }}]{% endfor %}", mut ref ctx7)
+    if r7.asStr() == "[#1: apple][#2: banana][#3: cherry]" {
+        io.println("  [PASS] forLoopIterationAndLoopIndices")
+        passed = passed + 1
+    } else {
+        io.println("  [FAIL] forLoopIterationAndLoopIndices")
+        failed = failed + 1
+    }
+
+    io.println("---------------------------------------------")
+    io.println("Test summary: ${passed} passed, ${failed} failed.")
+    if failed > 0 {
+        return 1
+    }
+    return 0
+}
+
+func runDemo(): void {
+    io.println("mutum — High-Performance Template Engine Demo")
+    io.println("=============================================")
+
+    let template = "<html>\n<title>{{ title | upper }}</title>\n<body>\n  <h1>Olá, {{ user }}!</h1>\n  {% if isAdmin %}\n    <p class=\"badge\">Acesso: Administrador</p>\n  {% else %}\n    <p>Acesso: Convidado</p>\n  {% endif %}\n\n  <p>Bio (com auto-escape XSS): {{ bio }}</p>\n  <p>Bio (sem escape): {{ bio | raw }}</p>\n\n  <h3>Tarefas pendentes:</h3>\n  <ul>\n  {% for task in tasks %}\n    <li>#{{ loop.index }}: {{ task }}</li>\n  {% endfor %}\n  </ul>\n</body>\n</html>"
+
+    let mut ctx = context.newContext()
+    context.setStr(mut ref ctx, "title", "painel arandu")
+    context.setStr(mut ref ctx, "user", "Bruno")
+    context.setBool(mut ref ctx, "isAdmin", true)
+    context.setStr(mut ref ctx, "bio", "<script>alert('xss')</script>")
+
+    let mut tasks = vec.Vec.new<str>()
+    tasks.push("Revisar auditoria do compilador")
+    tasks.push("Jogar Tetris no curumim")
+    tasks.push("Renderizar templates com mutum")
+    context.setList(mut ref ctx, "tasks", tasks.asSlice())
+
+    let rendered = engine.render(template, mut ref ctx)
+    io.println("Rendered Output:")
+    io.println("----------------")
+    io.println(rendered.asStr())
+    return
+}
+
+@Effects(FileRead, FileWrite, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+
+    if argc < 2 {
+        io.println("mutum — High-Performance & Safe Template Engine in Arandu")
+        io.println("")
+        io.println("Usage:")
+        io.println("  mutum demo                       Run built-in template feature demo")
+        io.println("  mutum render <file> [options]    Render template from file")
+        io.println("")
+        io.println("Options:")
+        io.println("  --set key=value                  Set a string variable in context")
+        io.println("  --set-bool key=true|false        Set a boolean variable in context")
+        io.println("  --set-int key=N                  Set an integer variable in context")
+        io.println("  --out <file>                     Write rendered output to file")
+        return 0
+    }
+
+    let command = env.arg(1)
+    if command == "demo" {
+        runDemo()
+        return 0
+    }
+
+    if command == "render" {
+        if argc < 3 {
+            io.println("Error: missing template file path.")
+            return 1
+        }
+
+        let filePath = env.arg(2)
+        match fs.readToString(filePath) {
+            Ok(templateStr) => {
+                let mut ctx = context.newContext()
+                let mut outPath = ""
+
+                let mut argIdx: int = 3
+                while argIdx < argc {
+                    let a = env.arg(argIdx)
+                    if a == "--set" {
+                        argIdx = argIdx + 1
+                        if argIdx < argc {
+                            let kv = env.arg(argIdx)
+                            let kvBytes = strings.asBytes(kv)
+                            let kvLen = slice.len<u8>(kvBytes)
+                            let mut eqPos = kvLen
+                            let mut k: usize = 0
+                            while k < kvLen {
+                                if kvBytes[k] == 61 { // '='
+                                    eqPos = k
+                                    k = kvLen
+                                } else {
+                                    k = k + 1
+                                }
+                            }
+                            if eqPos < kvLen {
+                                let mut kStr = ownedStrings.String.new()
+                                let mut i: usize = 0
+                                while i < eqPos {
+                                    kStr.pushScalar(kvBytes[i] as char)
+                                    i = i + 1
+                                }
+                                let mut vStr = ownedStrings.String.new()
+                                let mut j = eqPos + 1
+                                while j < kvLen {
+                                    vStr.pushScalar(kvBytes[j] as char)
+                                    j = j + 1
+                                }
+                                context.setStr(mut ref ctx, kStr.asStr(), vStr.asStr())
+                            }
+                        }
+                    } else if a == "--out" {
+                        argIdx = argIdx + 1
+                        if argIdx < argc {
+                            outPath = env.arg(argIdx)
+                        }
+                    }
+                    argIdx = argIdx + 1
+                }
+
+                let rendered = engine.render(templateStr.asStr(), mut ref ctx)
+
+                if outPath != "" {
+                    if writeAll(outPath, rendered.asBytes()) {
+                        io.println("Successfully rendered to ${outPath}.")
+                    } else {
+                        io.println("Failed to write output file: ${outPath}")
+                        return 1
+                    }
+                } else {
+                    io.println(rendered.asStr())
+                }
+                return 0
+            }
+            Err(err) => {
+                io.println("Failed to read template file: ${filePath}")
+                return 1
+            }
+        }
+    }
+
+    io.println("Unknown command: ${command}")
+    return 1
+}

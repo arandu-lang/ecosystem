@@ -1,0 +1,133 @@
+module roms
+
+import std.alloc.vec as vec
+
+/// Returns the classic 34-byte Maze Generator ROM.
+/// Continuously draws a pseudo-random maze pattern on the screen.
+public func getMazeRom(): vec.Vec<u8> {
+    let mut rom = vec.Vec.new<u8>()
+    // Opcode stream:
+    rom.push(0xA2 as u8)
+    rom.push(0x1A as u8) // LD I, 0x21A (sprite location)
+    rom.push(0x62 as u8)
+    rom.push(0x00 as u8) // LD V2, 0 (X coordinate)
+    rom.push(0x63 as u8)
+    rom.push(0x00 as u8) // LD V3, 0 (Y coordinate)
+    rom.push(0x60 as u8)
+    rom.push(0x00 as u8) // LD V0, 0
+    rom.push(0x61 as u8)
+    rom.push(0x00 as u8) // LD V1, 0
+    rom.push(0xC4 as u8)
+    rom.push(0x01 as u8) // RND V4, 1
+    rom.push(0x34 as u8)
+    rom.push(0x01 as u8) // SE V4, 1
+    rom.push(0x12 as u8)
+    rom.push(0x0E as u8) // JP 0x20E
+    rom.push(0xA2 as u8)
+    rom.push(0x1C as u8) // LD I, 0x21C
+    rom.push(0xD2 as u8)
+    rom.push(0x32 as u8) // DRW V2, V3, 2 (draw slash)
+    rom.push(0x72 as u8)
+    rom.push(0x04 as u8) // ADD V2, 4 (advance X)
+    rom.push(0x32 as u8)
+    rom.push(0x40 as u8) // SE V2, 64
+    rom.push(0x12 as u8)
+    rom.push(0x04 as u8) // JP 0x204 (next cell)
+    rom.push(0x62 as u8)
+    rom.push(0x00 as u8) // LD V2, 0 (reset X)
+    rom.push(0x73 as u8)
+    rom.push(0x04 as u8) // ADD V3, 4 (advance Y)
+    rom.push(0x33 as u8)
+    rom.push(0x20 as u8) // SE V3, 32
+    rom.push(0x12 as u8)
+    rom.push(0x04 as u8) // JP 0x204 (next row)
+    rom.push(0x12 as u8)
+    rom.push(0x18 as u8) // JP 0x218 (infinite loop at end of screen)
+    // Sprites at 0x21A: forward slash & backslash 2x2
+    rom.push(0x80 as u8)
+    rom.push(0x40 as u8)
+    rom.push(0x40 as u8)
+    rom.push(0x80 as u8)
+    return rom
+}
+
+/// Returns the classic IBM Logo test ROM (draws the IBM logo on screen).
+public func getIbmLogoRom(): vec.Vec<u8> {
+    let mut rom = vec.Vec.new<u8>()
+    rom.push(0x00 as u8)
+    rom.push(0xE0 as u8) // CLS
+    rom.push(0xA2 as u8)
+    rom.push(0x2A as u8) // LD I, 0x22A
+    rom.push(0x60 as u8)
+    rom.push(0x0C as u8) // LD V0, 12
+    rom.push(0x61 as u8)
+    rom.push(0x08 as u8) // LD V1, 8
+    rom.push(0xD0 as u8)
+    rom.push(0x1F as u8) // DRW V0, V1, 15
+    rom.push(0x70 as u8)
+    rom.push(0x09 as u8) // ADD V0, 9
+    rom.push(0xA2 as u8)
+    rom.push(0x39 as u8) // LD I, 0x239
+    rom.push(0xD0 as u8)
+    rom.push(0x1F as u8) // DRW V0, V1, 15
+    rom.push(0xA2 as u8)
+    rom.push(0x48 as u8) // LD I, 0x248
+    rom.push(0x70 as u8)
+    rom.push(0x08 as u8) // ADD V0, 8
+    rom.push(0xD0 as u8)
+    rom.push(0x1F as u8) // DRW V0, V1, 15
+    rom.push(0x70 as u8)
+    rom.push(0x04 as u8) // ADD V0, 4
+    rom.push(0xA2 as u8)
+    rom.push(0x57 as u8) // LD I, 0x257
+    rom.push(0xD0 as u8)
+    rom.push(0x1F as u8) // DRW V0, V1, 15
+    rom.push(0x70 as u8)
+    rom.push(0x08 as u8) // ADD V0, 8
+    rom.push(0xA2 as u8)
+    rom.push(0x66 as u8) // LD I, 0x266
+    rom.push(0xD0 as u8)
+    rom.push(0x1F as u8) // DRW V0, V1, 15
+    rom.push(0x70 as u8)
+    rom.push(0x08 as u8) // ADD V0, 8
+    rom.push(0xA2 as u8)
+    rom.push(0x75 as u8) // LD I, 0x275
+    rom.push(0xD0 as u8)
+    rom.push(0x1F as u8) // DRW V0, V1, 15
+    rom.push(0x12 as u8)
+    rom.push(0x28 as u8) // JP 0x228 (halt loop)
+
+    // Data sprites for IBM characters
+    // 'I'
+    rom.push(0xFF as u8); rom.push(0x00 as u8); rom.push(0xFF as u8); rom.push(0x00 as u8)
+    rom.push(0x38 as u8); rom.push(0x00 as u8); rom.push(0x38 as u8); rom.push(0x00 as u8)
+    rom.push(0x38 as u8); rom.push(0x00 as u8); rom.push(0x38 as u8); rom.push(0x00 as u8)
+    rom.push(0xFF as u8); rom.push(0x00 as u8); rom.push(0xFF as u8)
+    // 'B' (left)
+    rom.push(0xFF as u8); rom.push(0x00 as u8); rom.push(0xFF as u8); rom.push(0x00 as u8)
+    rom.push(0xE0 as u8); rom.push(0x00 as u8); rom.push(0xE0 as u8); rom.push(0x00 as u8)
+    rom.push(0xFF as u8); rom.push(0x00 as u8); rom.push(0xFF as u8); rom.push(0x00 as u8)
+    rom.push(0xE0 as u8); rom.push(0x00 as u8); rom.push(0xFF as u8)
+    // 'B' (right)
+    rom.push(0x03 as u8); rom.push(0x00 as u8); rom.push(0x07 as u8); rom.push(0x00 as u8)
+    rom.push(0x07 as u8); rom.push(0x00 as u8); rom.push(0x07 as u8); rom.push(0x00 as u8)
+    rom.push(0x03 as u8); rom.push(0x00 as u8); rom.push(0x07 as u8); rom.push(0x00 as u8)
+    rom.push(0x07 as u8); rom.push(0x00 as u8); rom.push(0x03 as u8)
+    // 'M' (left)
+    rom.push(0xE0 as u8); rom.push(0x00 as u8); rom.push(0xF0 as u8); rom.push(0x00 as u8)
+    rom.push(0xB8 as u8); rom.push(0x00 as u8); rom.push(0x9C as u8); rom.push(0x00 as u8)
+    rom.push(0x8E as u8); rom.push(0x00 as u8); rom.push(0x80 as u8); rom.push(0x00 as u8)
+    rom.push(0x80 as u8); rom.push(0x00 as u8); rom.push(0x80 as u8)
+    // 'M' (middle)
+    rom.push(0x0E as u8); rom.push(0x00 as u8); rom.push(0x1F as u8); rom.push(0x00 as u8)
+    rom.push(0x3B as u8); rom.push(0x00 as u8); rom.push(0x71 as u8); rom.push(0x00 as u8)
+    rom.push(0xE0 as u8); rom.push(0x00 as u8); rom.push(0x00 as u8); rom.push(0x00 as u8)
+    rom.push(0x00 as u8); rom.push(0x00 as u8); rom.push(0x00 as u8)
+    // 'M' (right)
+    rom.push(0x07 as u8); rom.push(0x00 as u8); rom.push(0x0F as u8); rom.push(0x00 as u8)
+    rom.push(0x1D as u8); rom.push(0x00 as u8); rom.push(0x39 as u8); rom.push(0x00 as u8)
+    rom.push(0x71 as u8); rom.push(0x00 as u8); rom.push(0x01 as u8); rom.push(0x00 as u8)
+    rom.push(0x01 as u8); rom.push(0x00 as u8); rom.push(0x01 as u8)
+
+    return rom
+}

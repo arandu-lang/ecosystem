@@ -1,0 +1,60 @@
+//! Arquivo gerado automaticamente pelo c2arandu
+//! Baseado na arquitetura Dual-Locus & OSSA da linguagem Arandu.
+
+// --- Funções Definidas e Transpiladas ---
+public func fibonacci(n: int): int {
+    if (n <= 1) {
+        return n
+    }
+    let mut a: int = 0
+    let mut b: int = 1
+    let mut i: int = 2
+    while (i <= n) {
+        let mut next: int = (a + b)
+        a = b
+        b = next
+        i = i + 1
+    }
+    return b
+}
+
+public func calculate(op: int, a: int, b: int): int {
+    let mut res: int = 0
+    match op {
+        1 => {
+            res = (a + b)
+        }
+        2 => {
+            res = (a - b)
+        }
+        3 => {
+            res = (a * b)
+        }
+        _ => {
+            res = 0
+        }
+    }
+    return res
+}
+
+public func count_down(_start: int, verbose: int): int {
+    let mut start = _start
+    let mut count: int = 0
+    if (verbose != 0) {
+        count = 1
+    }
+    while (start > 0) {
+        start = start - 1
+        count = count + 1
+    }
+    return count
+}
+
+public func main(): int {
+    let mut f10: int = fibonacci(10)
+    let mut c_add: int = calculate(1, 15, 27)
+    let mut c_mul: int = calculate(3, 7, 8)
+    let mut cd: int = count_down(50, 1)
+    return (((f10 + c_add) + c_mul) + cd)
+}
+

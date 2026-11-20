@@ -1,0 +1,91 @@
+module hexdump
+
+import io
+import std.core.slice as slice
+
+/// Returns the 2-byte lowercase hex encoding of `b`.
+public func formatHexByte(b: u8): [2]u8 {
+    let hi = (b >> 4) & 0x0f
+    let lo = b & 0x0f
+    let h: u8 = if hi < 10 { 48 + hi } else { 87 + hi }
+    let l: u8 = if lo < 10 { 48 + lo } else { 87 + lo }
+    let r: [2]u8 = [h, l]
+    return r
+}
+
+/// Returns true for printable ASCII characters (0x20..0x7e).
+public func isPrintable(b: u8): bool {
+    return b >= 32 && b <= 126
+}
+
+/// Format an 8-digit hex offset.
+func formatOffset(off: usize): [8]u8 {
+    let mut buf: [8]u8 = [48, 48, 48, 48, 48, 48, 48, 48]
+    let mut v = off
+    let mut i: usize = 7
+    while v > 0 {
+        let digit = (v & 0xf) as u8
+        buf[i] = if digit < 10 { 48 + digit } else { 87 + digit }
+        v = v >> 4
+        if i == 0 { break }
+        i = i - 1
+    }
+    return buf
+}
+
+/// Print a hex dump of `bytes[start_offset..start_offset+length]` to stdout.
+///
+/// Format per line:
+///   `XXXXXXXX  XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX  |................|`
+///
+/// This function allocates no heap — it works on a 80-byte line buffer on the stack.
+public func dumpBytes(bytes: []u8, start_offset: usize, length: usize): void {
+    let total = slice.len<u8>(bytes)
+    let end = if start_offset + length < total { start_offset + length } else { total }
+    let mut pos = start_offset
+
+    while pos < end {
+        // Print offset.
+        let off_buf = formatOffset(pos)
+        let mut oi: usize = 0
+        while oi < 8 { io.print("${off_buf[oi] as char}")  oi = oi + 1 }
+        io.print("  ")
+
+        // Print hex bytes — two groups of 8.
+        let line_end = if pos + 16 < end { pos + 16 } else { end }
+        let mut col: usize = 0
+        while col < 16 {
+            if pos + col < line_end {
+                let b = bytes[pos + col]
+                let pair = formatHexByte(b)
+                io.print("${pair[0] as char}")
+                io.print("${pair[1] as char}")
+            } else {
+                io.print("  ")
+            }
+            if col == 7 { io.print("  ") } else { io.print(" ") }
+            col = col + 1
+        }
+
+        // Print ASCII sidebar.
+        io.print(" \u{2502}")
+        let mut ac: usize = 0
+        while ac < 16 {
+            if pos + ac < line_end {
+                let b = bytes[pos + ac]
+                if isPrintable(b) {
+                    io.print("${b as char}")
+                } else {
+                    io.print(".")
+                }
+            } else {
+                io.print(" ")
+            }
+            ac = ac + 1
+        }
+        io.print("\u{2502}")
+        io.println("")
+
+        pos = pos + 16
+    }
+}

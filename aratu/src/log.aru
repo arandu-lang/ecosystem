@@ -1,0 +1,221 @@
+module log
+
+import std.alloc.string as ownedStrings
+import std.alloc.vec as vec
+import std.core.slice as slice
+
+public enum RecordType {
+    Put,
+    Delete,
+}
+
+public struct Record {
+    public kind: RecordType
+    public key: ownedStrings.String
+    public value: ownedStrings.String
+}
+
+/// Copies a byte slice into an owned string.
+///
+/// The language exposes no public byte-slice-to-string conversion, so the
+/// bytes are copied one scalar at a time.
+func bytesToOwned(b: []u8): ownedStrings.String {
+    let n = slice.len<u8>(b)
+    let mut out = ownedStrings.String.new()
+    let mut i: usize = 0
+    while i < n {
+        out.pushScalar(b[i] as char)
+        i = i + 1
+    }
+    return out
+}
+
+
+// ─── CRC32 (IEEE polynomial) ───────────────────────────────────────────────
+// Table-driven CRC32. The table is computed at runtime on first use.
+// Key compiler target: can the backend constant-fold the 256 u32 values?
+
+func crc32Table(): [256]u32 {
+    let poly: u32 = 0xedb88320
+    let mut table: [256]u32 = [
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
+    ]
+    let mut i: uint = 0
+    while i < 256 {
+        let mut crc: u32 = i as u32
+        let mut j: uint = 0
+        while j < 8 {
+            if (crc & 1) != 0 {
+                crc = (crc >> 1) ^ poly
+            } else {
+                crc = crc >> 1
+            }
+            j = j + 1
+        }
+        table[i as usize] = crc
+        i = i + 1
+    }
+    return table
+}
+
+/// Compute CRC32/IEEE of a byte slice.
+public func crc32(bytes: []u8): u32 {
+    let table = crc32Table()
+    let mut crc: u32 = 0xffffffff
+    let n = slice.len<u8>(bytes)
+    let mut i: usize = 0
+    while i < n {
+        let b = bytes[i] as usize
+        let idx = ((crc ^ bytes[i] as u32) & 0xff) as usize
+        crc = (crc >> 8) ^ table[idx]
+        i = i + 1
+    }
+    return crc ^ 0xffffffff
+}
+
+// ─── Record format ────────────────────────────────────────────────────────────
+// Type(1) | KeyLen(4 LE) | ValLen(4 LE) | Key(n) | Value(m) | CRC32(4 LE)
+
+/// Encode a record into `out`. Appends bytes.
+@Effects(Foreign)
+public func encodeRecord(rec: ref Record, out: mut ref vec.Vec<u8>): void {
+    let mut type_byte: u8 = 0x02
+    if rec.kind is RecordType.Put {
+        type_byte = 0x01
+    }
+    let key_bytes = rec.key.asBytes()
+    let val_bytes = rec.value.asBytes()
+    let key_len = slice.len<u8>(key_bytes) as u32
+    let val_len = slice.len<u8>(val_bytes) as u32
+
+    // Collect record bytes for CRC (everything before the checksum).
+    let mut record_buf = vec.Vec.new<u8>()
+    record_buf.push(type_byte)
+    record_buf.push((key_len & 0xff) as u8)
+    record_buf.push(((key_len >> 8) & 0xff) as u8)
+    record_buf.push(((key_len >> 16) & 0xff) as u8)
+    record_buf.push(((key_len >> 24) & 0xff) as u8)
+    record_buf.push((val_len & 0xff) as u8)
+    record_buf.push(((val_len >> 8) & 0xff) as u8)
+    record_buf.push(((val_len >> 16) & 0xff) as u8)
+    record_buf.push(((val_len >> 24) & 0xff) as u8)
+
+    let mut ki: usize = 0
+    while ki < slice.len<u8>(key_bytes) {
+        record_buf.push(key_bytes[ki])
+        ki = ki + 1
+    }
+    let mut vi: usize = 0
+    while vi < slice.len<u8>(val_bytes) {
+        record_buf.push(val_bytes[vi])
+        vi = vi + 1
+    }
+
+    let crc = crc32(record_buf.asSlice())
+
+    // Append record bytes to out.
+    let rec_slice = record_buf.asSlice()
+    let mut bi: usize = 0
+    while bi < record_buf.len() {
+        out.push(rec_slice[bi])
+        bi = bi + 1
+    }
+    // Append CRC32 in little-endian.
+    out.push((crc & 0xff) as u8)
+    out.push(((crc >> 8) & 0xff) as u8)
+    out.push(((crc >> 16) & 0xff) as u8)
+    out.push(((crc >> 24) & 0xff) as u8)
+}
+
+func readU32Le(bytes: []u8, off: usize): u32 {
+    return (bytes[off] as u32)
+        | ((bytes[off + 1] as u32) << 8)
+        | ((bytes[off + 2] as u32) << 16)
+        | ((bytes[off + 3] as u32) << 24)
+}
+
+/// Parse one record from `bytes` at `offset`. Returns the record and the offset
+/// of the next record (or error).
+@Effects(Foreign)
+public func readRecord(bytes: []u8, offset: usize): Result<Record, str> {
+    let n = slice.len<u8>(bytes)
+    if offset + 9 > n {
+        return Result.Err("truncated record header")
+    }
+    let type_byte = bytes[offset]
+    let kind: RecordType = if type_byte == 0x01 { RecordType.Put } else { RecordType.Delete }
+    let key_len = readU32Le(bytes, offset + 1) as usize
+    let val_len = readU32Le(bytes, offset + 5) as usize
+    let total = 9 + key_len + val_len + 4
+    if offset + total > n {
+        return Result.Err("truncated record body")
+    }
+
+    let key_start = offset + 9
+    let val_start = key_start + key_len
+    let crc_offset = val_start + val_len
+
+    // Verify CRC.
+    let mut record_bytes: []u8 = bytes
+    match slice.subslice<u8>(bytes, offset, crc_offset - offset) {
+        Some(rb) => {
+            record_bytes = rb
+        }
+        None => {
+            return Result.Err("truncated record body")
+        }
+    }
+    let expected_crc = crc32(record_bytes)
+    let stored_crc = readU32Le(bytes, crc_offset)
+    if expected_crc != stored_crc {
+        return Result.Err("CRC mismatch")
+    }
+
+    let mut key_slice: []u8 = bytes
+    match slice.subslice<u8>(bytes, key_start, key_len) {
+        Some(ks) => {
+            key_slice = ks
+        }
+        None => {
+            return Result.Err("truncated key")
+        }
+    }
+    let mut val_slice: []u8 = bytes
+    match slice.subslice<u8>(bytes, val_start, val_len) {
+        Some(vs) => {
+            val_slice = vs
+        }
+        None => {
+            return Result.Err("truncated value")
+        }
+    }
+    let key = bytesToOwned(key_slice)
+    let value = bytesToOwned(val_slice)
+
+    let rec = Record { kind: kind, key: key, value: value }
+    return Result.Ok(rec)
+}
+
+/// Return the byte length of the record at `offset`, or 0 on error.
+public func recordLen(bytes: []u8, offset: usize): usize {
+    let n = slice.len<u8>(bytes)
+    if offset + 9 > n { return 0 }
+    let key_len = readU32Le(bytes, offset + 1) as usize
+    let val_len = readU32Le(bytes, offset + 5) as usize
+    return 9 + key_len + val_len + 4
+}

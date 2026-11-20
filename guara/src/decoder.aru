@@ -1,0 +1,143 @@
+module decoder
+
+/// Extracts the 7-bit opcode (`inst[6:0]`).
+public func opcode(inst: u32): u32 {
+    return inst & 0x7F
+}
+
+/// Extracts the 5-bit destination register index `rd` (`inst[11:7]`).
+public func rd(inst: u32): usize {
+    return ((inst >> 7) & 0x1F) as usize
+}
+
+/// Extracts the 3-bit function code `funct3` (`inst[14:12]`).
+public func funct3(inst: u32): u32 {
+    return (inst >> 12) & 0x07
+}
+
+/// Extracts the 5-bit source register 1 index `rs1` (`inst[19:15]`).
+public func rs1(inst: u32): usize {
+    return ((inst >> 15) & 0x1F) as usize
+}
+
+/// Extracts the 5-bit source register 2 index `rs2` (`inst[24:20]`).
+public func rs2(inst: u32): usize {
+    return ((inst >> 20) & 0x1F) as usize
+}
+
+/// Extracts the 7-bit function code `funct7` (`inst[31:25]`).
+public func funct7(inst: u32): u32 {
+    return (inst >> 25) & 0x7F
+}
+
+/// Decodes and sign-extends a 12-bit I-type immediate (`inst[31:20]`) to 32 bits.
+public func decodeImmI(inst: u32): u32 {
+    let signedInst = inst as i32
+    let shifted = signedInst >> 20
+    return shifted as u32
+}
+
+/// Decodes and sign-extends a 12-bit S-type immediate (`inst[31:25] | inst[11:7]`) to 32 bits.
+public func decodeImmS(inst: u32): u32 {
+    let imm11To5 = (inst >> 25) & 0x7F
+    let imm4To0 = (inst >> 7) & 0x1F
+    let raw = (imm11To5 << 5) | imm4To0
+    // Sign-extend from bit 11
+    let shifted = ((raw << 20) as i32) >> 20
+    return shifted as u32
+}
+
+/// Decodes and sign-extends a 13-bit B-type branch offset (`imm[12|10:5|4:1|11] << 1`) to 32 bits.
+public func decodeImmB(inst: u32): u32 {
+    let bit12 = (inst >> 31) & 0x01
+    let bits10To5 = (inst >> 25) & 0x3F
+    let bits4To1 = (inst >> 8) & 0x0F
+    let bit11 = (inst >> 7) & 0x01
+    let raw = (bit12 << 12) | (bit11 << 11) | (bits10To5 << 5) | (bits4To1 << 1)
+    // Sign-extend from bit 12
+    let shifted = ((raw << 19) as i32) >> 19
+    return shifted as u32
+}
+
+/// Decodes a 20-bit U-type upper immediate (`inst[31:12] << 12`).
+public func decodeImmU(inst: u32): u32 {
+    return inst & 0xFFFFF000
+}
+
+/// Decodes and sign-extends a 21-bit J-type jump offset (`imm[20|10:1|11|19:12] << 1`) to 32 bits.
+public func decodeImmJ(inst: u32): u32 {
+    let bit20 = (inst >> 31) & 0x01
+    let bits10To1 = (inst >> 21) & 0x3FF
+    let bit11 = (inst >> 20) & 0x01
+    let bits19To12 = (inst >> 12) & 0xFF
+    let raw = (bit20 << 20) | (bits19To12 << 12) | (bit11 << 11) | (bits10To1 << 1)
+    // Sign-extend from bit 20
+    let shifted = ((raw << 11) as i32) >> 11
+    return shifted as u32
+}
+
+// ---------------------------------------------------------------------------
+// RV32I Instruction Assemblers (Helper functions for tests & built-in demos)
+// ---------------------------------------------------------------------------
+
+public func encodeR(funct7Val: u32, rs2Val: u32, rs1Val: u32, funct3Val: u32, rdVal: u32, op: u32): u32 {
+    return ((funct7Val & 0x7F) << 25)
+        | ((rs2Val & 0x1F) << 20)
+        | ((rs1Val & 0x1F) << 15)
+        | ((funct3Val & 0x07) << 12)
+        | ((rdVal & 0x1F) << 7)
+        | (op & 0x7F)
+}
+
+public func encodeI(imm12: u32, rs1Val: u32, funct3Val: u32, rdVal: u32, op: u32): u32 {
+    return ((imm12 & 0xFFF) << 20)
+        | ((rs1Val & 0x1F) << 15)
+        | ((funct3Val & 0x07) << 12)
+        | ((rdVal & 0x1F) << 7)
+        | (op & 0x7F)
+}
+
+public func encodeS(imm12: u32, rs2Val: u32, rs1Val: u32, funct3Val: u32, op: u32): u32 {
+    let imm11To5 = (imm12 >> 5) & 0x7F
+    let imm4To0 = imm12 & 0x1F
+    return (imm11To5 << 25)
+        | ((rs2Val & 0x1F) << 20)
+        | ((rs1Val & 0x1F) << 15)
+        | ((funct3Val & 0x07) << 12)
+        | (imm4To0 << 7)
+        | (op & 0x7F)
+}
+
+public func encodeB(offset: u32, rs2Val: u32, rs1Val: u32, funct3Val: u32, op: u32): u32 {
+    let bit12 = (offset >> 12) & 0x01
+    let bit11 = (offset >> 11) & 0x01
+    let bits10To5 = (offset >> 5) & 0x3F
+    let bits4To1 = (offset >> 1) & 0x0F
+    return (bit12 << 31)
+        | (bits10To5 << 25)
+        | ((rs2Val & 0x1F) << 20)
+        | ((rs1Val & 0x1F) << 15)
+        | ((funct3Val & 0x07) << 12)
+        | (bits4To1 << 8)
+        | (bit11 << 7)
+        | (op & 0x7F)
+}
+
+public func encodeU(immUpper20: u32, rdVal: u32, op: u32): u32 {
+    return (immUpper20 & 0xFFFFF000)
+        | ((rdVal & 0x1F) << 7)
+        | (op & 0x7F)
+}
+
+public func encodeJ(offset: u32, rdVal: u32, op: u32): u32 {
+    let bit20 = (offset >> 20) & 0x01
+    let bits10To1 = (offset >> 1) & 0x3FF
+    let bit11 = (offset >> 11) & 0x01
+    let bits19To12 = (offset >> 12) & 0xFF
+    return (bit20 << 31)
+        | (bits10To1 << 21)
+        | (bit11 << 20)
+        | (bits19To12 << 12)
+        | ((rdVal & 0x1F) << 7)
+        | (op & 0x7F)
+}

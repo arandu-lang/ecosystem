@@ -1,0 +1,172 @@
+module parser
+
+import std.core.slice as slice
+import std.core.str as strings
+import std.alloc.string as ownedStrings
+
+/// HTTP method.
+public enum Method {
+    Get,
+    Head,
+    Post,
+    Other,
+}
+
+/// Parsed HTTP/1.1 request.
+///
+/// The language exposes no public byte-slice-to-`str` conversion, so `path`
+/// and `host` are owned strings built while parsing instead of borrows into
+/// the request buffer.
+public struct HttpRequest {
+    public method: Method
+    public path: ownedStrings.String
+    public host: ownedStrings.String
+    public content_length: uint
+}
+
+/// Compares `a[a_start .. a_start + a_count]` against all of `b`.
+func rangeEquals(a: []u8, a_start: usize, a_count: usize, b: []u8): bool {
+    let la = slice.len<u8>(a)
+    let lb = slice.len<u8>(b)
+    if a_count != lb {
+        return false
+    }
+    if a_start + a_count > la {
+        return false
+    }
+    let mut i: usize = 0
+    while i < a_count {
+        if a[a_start + i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Copies `buf[start .. start + count]` into an owned UTF-8 string.
+func bytesToString(buf: []u8, start: usize, count: usize): ownedStrings.String {
+    let n = slice.len<u8>(buf)
+    let end = if start + count < n { start + count } else { n }
+    let mut out = ownedStrings.String.new()
+    let mut i = start
+    while i < end {
+        out.pushScalar(buf[i] as char)
+        i = i + 1
+    }
+    return out
+}
+
+func parseMethod(bytes: []u8, start: usize, end: usize): Method {
+    let get_bytes = strings.asBytes("GET")
+    let head_bytes = strings.asBytes("HEAD")
+    let post_bytes = strings.asBytes("POST")
+    let count = end - start
+    if rangeEquals(bytes, start, count, get_bytes) {
+        return Method.Get
+    }
+    if rangeEquals(bytes, start, count, head_bytes) {
+        return Method.Head
+    }
+    if rangeEquals(bytes, start, count, post_bytes) {
+        return Method.Post
+    }
+    return Method.Other
+}
+
+/// Parse an HTTP/1.1 request from `buf[0..len]`.
+///
+/// Returns an owned `HttpRequest`, or an error message.
+public func parseRequest(buf: []u8, len: usize): Result<HttpRequest, str> {
+    let n = if len < slice.len<u8>(buf) { len } else { slice.len<u8>(buf) }
+    if n < 4 {
+        return Result.Err("request too short")
+    }
+
+    // Request line: METHOD SP PATH SP HTTP/1.x CRLF
+    let mut i: usize = 0
+    while i < n && buf[i] != 32 && buf[i] != 10 {
+        i = i + 1
+    }
+    let method_end = i
+    if i >= n || buf[i] != 32 {
+        return Result.Err("malformed request line: no method")
+    }
+    i = i + 1
+    let path_start = i
+
+    while i < n && buf[i] != 32 && buf[i] != 10 {
+        i = i + 1
+    }
+    let path_end = i
+    if path_end == path_start {
+        return Result.Err("empty path")
+    }
+
+    // Skip the HTTP version and the rest of the request line.
+    while i < n && buf[i] != 10 {
+        i = i + 1
+    }
+    if i < n {
+        i = i + 1
+    }
+
+    let method = parseMethod(buf, 0, method_end)
+    let path = bytesToString(buf, path_start, path_end - path_start)
+
+    // Headers until the blank line.
+    let mut host = ownedStrings.String.new()
+    let mut content_length: uint = 0
+
+    let host_marker = strings.asBytes("Host: ")
+    let cl_marker = strings.asBytes("Content-Length: ")
+    let host_marker_len = slice.len<u8>(host_marker)
+    let cl_marker_len = slice.len<u8>(cl_marker)
+
+    while i < n {
+        // Blank line (either CRLF or LF alone) ends the header block.
+        if buf[i] == 13 && i + 1 < n && buf[i + 1] == 10 {
+            break
+        }
+        if buf[i] == 10 {
+            break
+        }
+
+        let line_start = i
+        while i < n && buf[i] != 10 {
+            i = i + 1
+        }
+        let line_end = if i > 0 && buf[i - 1] == 13 { i - 1 } else { i }
+        if i < n {
+            i = i + 1
+        }
+
+        let line_len = line_end - line_start
+
+        if line_len > host_marker_len {
+            if rangeEquals(buf, line_start, host_marker_len, host_marker) {
+                host = bytesToString(buf, line_start + host_marker_len, line_len - host_marker_len)
+            }
+        }
+
+        if line_len > cl_marker_len {
+            if rangeEquals(buf, line_start, cl_marker_len, cl_marker) {
+                let mut cl: uint = 0
+                let mut ci = line_start + cl_marker_len
+                while ci < line_end && buf[ci] >= 48 && buf[ci] <= 57 {
+                    cl = cl * 10 + (buf[ci] - 48) as uint
+                    ci = ci + 1
+                }
+                content_length = cl
+            }
+        }
+    }
+
+    let req = HttpRequest {
+        method: method,
+        path: path,
+        host: host,
+        content_length: content_length,
+    }
+    return Result.Ok(req)
+}

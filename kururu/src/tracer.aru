@@ -1,0 +1,161 @@
+module tracer
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+
+import self.math as math
+
+
+public struct Ray {
+    public origin: math.Vec3
+    public direction: math.Vec3
+}
+
+public struct Sphere {
+    public center: math.Vec3
+    public radius: f32
+    public color: math.Vec3
+    public shininess: f32
+    public reflectivity: f32
+}
+
+public struct Light {
+    public position: math.Vec3
+    public color: math.Vec3
+    public intensity: f32
+}
+
+public struct HitRecord {
+    public t: f32
+    public point: math.Vec3
+    public normal: math.Vec3
+    public sphere_idx: usize
+}
+
+/// Ray-sphere intersection. Returns hit `t` or -1.0 if no hit.
+/// This is the tightest inner loop in the ray tracer — all float ops must
+/// stay in XMM registers; any stack spill here is a measurable regression.
+public func raySphereIntersect(ray: ref Ray, sphere: ref Sphere): f32 {
+    let oc = ray.origin.sub(sphere.center)
+    let a = ray.direction.dot(ray.direction)
+    let b = oc.dot(ray.direction) * 2.0
+    let c = oc.dot(oc) - sphere.radius * sphere.radius
+    let disc = b * b - 4.0 * a * c
+    if disc < 0.0 { return -1.0 }
+    let sq = math.sqrt(disc)
+    let t1 = (-b - sq) / (2.0 * a)
+    if t1 > 0.001 { return t1 }
+    let t2 = (-b + sq) / (2.0 * a)
+    if t2 > 0.001 { return t2 }
+    return -1.0
+}
+
+/// Find the closest hit among all spheres. Returns None if no sphere hit.
+public func closestHit(ray: ref Ray, spheres: []Sphere): Option<HitRecord> {
+    let mut best_t: f32 = 1000000.0
+    let mut hit = false
+    let mut best_idx: usize = 0
+    let n = slice.len<Sphere>(spheres)
+    let mut i: usize = 0
+    while i < n {
+        let t = raySphereIntersect(ray, ref spheres[i])
+        if t > 0.0 && t < best_t {
+            best_t = t
+            best_idx = i
+            hit = true
+        }
+        i = i + 1
+    }
+    if !hit { return Option.None }
+    let point = ray.origin.add(ray.direction.scale(best_t))
+    let normal = point.sub(spheres[best_idx].center).normalize()
+    let rec = HitRecord {
+        t: best_t,
+        point: point,
+        normal: normal,
+        sphere_idx: best_idx,
+    }
+    return Option.Some(rec)
+}
+
+/// Test whether a point is in shadow with respect to a light.
+public func isInShadow(point: math.Vec3, light_pos: math.Vec3, spheres: []Sphere): bool {
+    let to_light = light_pos.sub(point)
+    let dist = to_light.length()
+    let dir = to_light.normalize()
+    let shadow_ray = Ray { origin: point.add(dir.scale(0.001)), direction: dir }
+    let n = slice.len<Sphere>(spheres)
+    let mut i: usize = 0
+    while i < n {
+        let t = raySphereIntersect(ref shadow_ray, ref spheres[i])
+        if t > 0.0 && t < dist {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+/// Compute Blinn-Phong color for a ray. Recurses for reflections up to `depth`.
+public func rayColor(ray: ref Ray, spheres: []Sphere, lights: []Light, depth: uint): math.Vec3 {
+    if depth == 0 {
+        return math.vec3(0.0, 0.0, 0.0)
+    }
+    match closestHit(ray, spheres) {
+        Some(hit) => {
+            let sphere = ref spheres[hit.sphere_idx]
+            let base_color = sphere.color
+            let mut color = math.vec3(0.0, 0.0, 0.0)
+
+            // Ambient term.
+            color = color.add(base_color.scale(0.05))
+
+            // For each light: diffuse + specular (Blinn-Phong).
+            let nlight = slice.len<Light>(lights)
+            let mut li: usize = 0
+            while li < nlight {
+                let light = ref lights[li]
+                if !isInShadow(hit.point, light.position, spheres) {
+                    let to_light = light.position.sub(hit.point).normalize()
+                    let diff = math.clamp(hit.normal.dot(to_light), 0.0, 1.0)
+                    let diffuse = base_color.mulComp(light.color).scale(diff * light.intensity)
+                    color = color.add(diffuse)
+
+                    // Specular (Blinn halfway vector).
+                    let view = ray.direction.neg().normalize()
+                    let halfway = to_light.add(view).normalize()
+                    let spec_angle = math.clamp(hit.normal.dot(halfway), 0.0, 1.0)
+                    let mut spec: f32 = 1.0
+                    let mut si: uint = 0
+                    while si < sphere.shininess as uint {
+                        spec = spec * spec_angle
+                        si = si + 1
+                    }
+                    let specular = light.color.scale(spec * light.intensity * 0.5)
+                    color = color.add(specular)
+                }
+                li = li + 1
+            }
+
+            // Reflection.
+            if sphere.reflectivity > 0.0 && depth > 1 {
+                let reflected_dir = ray.direction.reflect(hit.normal)
+                let reflected_ray = Ray {
+                    origin: hit.point.add(hit.normal.scale(0.001)),
+                    direction: reflected_dir,
+                }
+                let reflected_color = rayColor(ref reflected_ray, spheres, lights, depth - 1)
+                color = color.add(reflected_color.scale(sphere.reflectivity))
+            }
+
+            return color.clamp01()
+        }
+        None => {
+            // Sky gradient.
+            let t = (ray.direction.normalize().y + 1.0) * 0.5
+            let sky_top = math.vec3(0.5, 0.7, 1.0)
+            let sky_bot = math.vec3(1.0, 1.0, 1.0)
+            return sky_bot.scale(1.0 - t).add(sky_top.scale(t))
+        }
+    }
+}

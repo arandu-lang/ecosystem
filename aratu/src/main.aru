@@ -1,0 +1,100 @@
+module aratu
+
+import io
+import std.env as env
+import self.store as store
+
+@Effects(FileRead, FileWrite, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    if argc < 3 {
+        io.println("aratu — embedded append-only key-value store")
+        io.println("")
+        io.println("Usage:")
+        io.println("  aratu <db-path> put <key> <value>")
+        io.println("  aratu <db-path> get <key>")
+        io.println("  aratu <db-path> del <key>")
+        io.println("  aratu <db-path> list")
+        io.println("  aratu <db-path> compact")
+        return 1
+    }
+
+    let db_path = env.arg(1)
+    let cmd = env.arg(2)
+
+    match store.openStore(db_path) {
+        Ok(mut s) => {
+            if cmd == "put" {
+                if argc < 5 {
+                    io.println("aratu: put requires <key> and <value>")
+                    return 1
+                }
+                let key = env.arg(3)
+                let val = env.arg(4)
+                match s.put(key, val) {
+                    Ok(_) => {
+                        io.println("OK")
+                        return 0
+                    }
+                    Err(e) => {
+                        io.println("aratu error: ${e}")
+                        return 1
+                    }
+                }
+            } else if cmd == "get" {
+                if argc < 4 {
+                    io.println("aratu: get requires <key>")
+                    return 1
+                }
+                let key = env.arg(3)
+                match s.get(key) {
+                    Ok(val) => {
+                        io.println("${val.asStr()}")
+                        return 0
+                    }
+                    Err(e) => {
+                        io.println("aratu: ${e}")
+                        return 1
+                    }
+                }
+            } else if cmd == "del" {
+                if argc < 4 {
+                    io.println("aratu: del requires <key>")
+                    return 1
+                }
+                let key = env.arg(3)
+                match s.del(key) {
+                    Ok(_) => {
+                        io.println("OK")
+                        return 0
+                    }
+                    Err(e) => {
+                        io.println("aratu: ${e}")
+                        return 1
+                    }
+                }
+            } else if cmd == "list" {
+                s.list()
+                return 0
+            } else if cmd == "compact" {
+                match s.compact() {
+                    Ok(live) => {
+                        io.println("Compacted: ${live} live keys")
+                        return 0
+                    }
+                    Err(e) => {
+                        io.println("aratu: ${e}")
+                        return 1
+                    }
+                }
+            } else {
+                io.println("aratu: unknown command ${cmd}")
+                return 1
+            }
+        }
+        Err(e) => {
+            io.println("aratu: failed to open store: ${e}")
+            return 1
+        }
+    }
+}

@@ -1,0 +1,74 @@
+module kandiru
+
+import io
+import std.env as env
+import std.fs as fs
+import std.alloc.string as ownedStrings
+import std.core.str as strings
+
+import self.parser as parser
+import self.query as query
+import self.printer as printer
+
+@Effects(FileRead, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    if argc < 2 {
+        io.println("kandiru — JSON query tool")
+        io.println("")
+        io.println("Usage: kandiru <file> [<query>] [--compact] [-r]")
+        io.println("")
+        io.println("Query examples: .key   .[0]   .items.[2].name   .[]")
+        return 1
+    }
+
+    let mut file_path = ""
+    let mut query_str = "."
+    let mut compact = false
+    let mut raw_output = false
+
+    let mut i: int = 1
+    while i < argc {
+        let a = env.arg(i)
+        if a == "--compact" {
+            compact = true
+        } else if a == "-r" || a == "--raw-output" {
+            raw_output = true
+        } else if file_path == "" {
+            file_path = a
+        } else {
+            query_str = a
+        }
+        i = i + 1
+    }
+
+    match fs.readToString(file_path) {
+        Ok(mut content) => {
+            let src = content.asBytes()
+            match parser.parseJson(src) {
+                Ok(mut arena) => {
+                    let q_bytes = strings.asBytes(query_str)
+                    let mut steps = query.parseQuery(query_str)
+                    let results = query.applyQuery(ref arena, src, ref steps, q_bytes)
+                    let nr = results.len()
+                    let results_slice = results.asSlice()
+                    let mut ri: usize = 0
+                    while ri < nr {
+                        let node_idx = results_slice[ri]
+                        printer.printNode(ref arena, src, node_idx, compact, raw_output, 0)
+                        ri = ri + 1
+                    }
+                }
+                Err(e) => {
+                    io.println("kandiru: parse error at offset ${e.offset}: ${e.message}")
+                    return 1
+                }
+            }
+        }
+        Err(_) => {
+            io.println("kandiru: cannot read file: ${file_path}")
+            return 1
+        }
+    }
+    return 0
+}

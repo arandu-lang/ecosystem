@@ -1,0 +1,154 @@
+module sarapo_tests
+
+import std.testing as testing
+import std.core.slice as slice
+import std.core.str as strings
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+
+import self.parser as parser
+from self.parser import { Method }
+import self.status as status
+import self.handler as handler
+
+/// Copies a byte slice into an owned UTF-8 string (the language has no public
+/// byte-slice-to-`str` conversion).
+func bytesToStr(b: []u8): ownedStrings.String {
+    let n = slice.len<u8>(b)
+    let mut out = ownedStrings.String.new()
+    let mut i: usize = 0
+    while i < n {
+        out.pushScalar(b[i] as char)
+        i = i + 1
+    }
+    return out
+}
+
+@Test
+func parse_simple_get_request(): void {
+    let raw = strings.asBytes("GET /index.html HTTP/1.1\r\nHost: localhost:8080\r\n\r\n")
+    match parser.parseRequest(raw, slice.len<u8>(raw)) {
+        Ok(req) => {
+            let ok_get = match req.method {
+                Method.Get => true
+                _ => false
+            }
+            testing.expect(ok_get, "method should be GET")
+            testing.expect(req.path.asStr() == "/index.html", "path should be /index.html")
+            testing.expect(req.host.asStr() == "localhost:8080", "host mismatch")
+        }
+        Err(e) => {
+            testing.expect(false, "parse error: ${e}")
+        }
+    }
+}
+
+@Test
+func parse_head_request(): void {
+    let raw = strings.asBytes("HEAD /api/status HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    match parser.parseRequest(raw, slice.len<u8>(raw)) {
+        Ok(req) => {
+            let ok_head = match req.method {
+                Method.Head => true
+                _ => false
+            }
+            testing.expect(ok_head, "method should be HEAD")
+            testing.expect(req.path.asStr() == "/api/status", "path mismatch")
+        }
+        Err(e) => {
+            testing.expect(false, "parse error: ${e}")
+        }
+    }
+}
+
+@Test
+func content_length_header_is_parsed(): void {
+    let raw = strings.asBytes("POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 42\r\n\r\n")
+    match parser.parseRequest(raw, slice.len<u8>(raw)) {
+        Ok(req) => {
+            let ok_post = match req.method {
+                Method.Post => true
+                _ => false
+            }
+            testing.expect(ok_post, "method should be POST")
+            testing.expect(req.content_length == 42, "content-length should be 42")
+        }
+        Err(e) => {
+            testing.expect(false, "parse error: ${e}")
+        }
+    }
+}
+
+@Test
+func parse_malformed_request_returns_err(): void {
+    let raw = strings.asBytes("MALFORMED\r\n\r\n")
+    match parser.parseRequest(raw, slice.len<u8>(raw)) {
+        Ok(_) => {
+            testing.expect(false, "expected error on malformed request")
+        }
+        Err(_) => {
+            testing.expect(true, "correctly returned error")
+        }
+    }
+}
+
+@Test
+func content_type_detection(): void {
+    testing.expect(strings.startsWith(handler.detectContentType("app.js"), "application/javascript"), "js content-type")
+    testing.expect(strings.startsWith(handler.detectContentType("index.html"), "text/html"), "html content-type")
+    testing.expect(strings.startsWith(handler.detectContentType("styles.css"), "text/css"), "css content-type")
+    testing.expect(strings.startsWith(handler.detectContentType("data.json"), "application/json"), "json content-type")
+    testing.expect(strings.startsWith(handler.detectContentType("module.wasm"), "application/wasm"), "wasm content-type")
+}
+
+@Test
+func build_response_structure(): void {
+    let body = strings.asBytes("Hello World")
+    let resp = handler.buildResponse(200, "text/plain", body, true)
+    let s = bytesToStr(resp.asSlice())
+    testing.expect(strings.startsWith(s.asStr(), "HTTP/1.1 200 OK\r\n"), "response status line")
+    testing.expect(strings.contains(s.asStr(), "Content-Length: 11\r\n"), "content length header")
+    testing.expect(strings.contains(s.asStr(), "Connection: close\r\n"), "connection close header")
+}
+
+@Test
+func head_response_has_no_body(): void {
+    let body = strings.asBytes("Hello World")
+    let resp = handler.buildResponse(200, "text/plain", body, false)
+    let head_len = resp.len()
+    let resp_with_body = handler.buildResponse(200, "text/plain", body, true)
+    testing.expect(head_len == resp_with_body.len() - 11, "HEAD response must omit the body bytes")
+}
+
+@Test
+func handle_conn_serves_file(): void {
+    let raw = strings.asBytes("GET /hello.txt HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    let resp = handler.handleConn(raw, slice.len<u8>(raw), "/tmp/opencode/site")
+    let s = bytesToStr(resp.asSlice())
+    testing.expect(strings.startsWith(s.asStr(), "HTTP/1.1 200 OK\r\n"), "expected 200 for existing file")
+    testing.expect(strings.contains(s.asStr(), "hello world"), "body must contain file contents")
+}
+
+@Test
+func handle_conn_missing_file_is_404(): void {
+    let raw = strings.asBytes("GET /definitely-missing.txt HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    let resp = handler.handleConn(raw, slice.len<u8>(raw), "/tmp/opencode/site")
+    let s = bytesToStr(resp.asSlice())
+    testing.expect(strings.startsWith(s.asStr(), "HTTP/1.1 404 Not Found\r\n"), "expected 404 for missing file")
+}
+
+@Test
+func handle_conn_rejects_post(): void {
+    let raw = strings.asBytes("POST /hello.txt HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    let resp = handler.handleConn(raw, slice.len<u8>(raw), "/tmp/opencode/site")
+    let s = bytesToStr(resp.asSlice())
+    testing.expect(strings.startsWith(s.asStr(), "HTTP/1.1 405 Method Not Allowed\r\n"), "expected 405 for POST")
+}
+
+@Test
+func handle_conn_rejects_path_traversal_with_403(): void {
+    let raw = strings.asBytes("GET /../../etc/passwd HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    let resp = handler.handleConn(raw, slice.len<u8>(raw), "/tmp/opencode/site")
+    let s = bytesToStr(resp.asSlice())
+    testing.expect(strings.startsWith(s.asStr(), "HTTP/1.1 403 Forbidden\r\n"), "expected 403 for path traversal")
+}

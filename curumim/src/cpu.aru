@@ -1,0 +1,399 @@
+module cpu
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+
+import self.display as display
+import self.keypad as keypad
+import self.timers as timers
+
+/// CHIP-8 CPU virtual machine state.
+public struct Cpu {
+    public memory: vec.Vec<u8>
+    public v: vec.Vec<u8>
+    public indexReg: u16
+    public pc: u16
+    public stack: vec.Vec<u16>
+    public disp: display.Display
+    public keys: keypad.Keypad
+    public tm: timers.Timers
+    public modernShift: bool
+    public modernLoadI: bool
+    public rngState: u32
+    public totalCycles: u64
+    public halted: bool
+}
+
+/// Creates a new CHIP-8 CPU with loaded fontset and zeroed registers.
+public func newCpu(): Cpu {
+    let mut mem = vec.Vec.new<u8>()
+    let mut i: usize = 0
+    while i < 4096 {
+        mem.push(0 as u8)
+        i = i + 1
+    }
+
+    // Load standard 4x5 hex fontset into memory at 0x050 - 0x09F (80 bytes)
+    let fontset: [80]u8 = [
+        0xF0 as u8, 0x90 as u8, 0x90 as u8, 0x90 as u8, 0xF0 as u8, // 0
+        0x20 as u8, 0x60 as u8, 0x20 as u8, 0x20 as u8, 0x70 as u8, // 1
+        0xF0 as u8, 0x10 as u8, 0xF0 as u8, 0x80 as u8, 0xF0 as u8, // 2
+        0xF0 as u8, 0x10 as u8, 0xF0 as u8, 0x10 as u8, 0xF0 as u8, // 3
+        0x90 as u8, 0x90 as u8, 0xF0 as u8, 0x10 as u8, 0x10 as u8, // 4
+        0xF0 as u8, 0x80 as u8, 0xF0 as u8, 0x10 as u8, 0xF0 as u8, // 5
+        0xF0 as u8, 0x80 as u8, 0xF0 as u8, 0x90 as u8, 0xF0 as u8, // 6
+        0xF0 as u8, 0x10 as u8, 0x20 as u8, 0x40 as u8, 0x40 as u8, // 7
+        0xF0 as u8, 0x90 as u8, 0xF0 as u8, 0x90 as u8, 0xF0 as u8, // 8
+        0xF0 as u8, 0x90 as u8, 0xF0 as u8, 0x10 as u8, 0xF0 as u8, // 9
+        0xF0 as u8, 0x90 as u8, 0xF0 as u8, 0x90 as u8, 0x90 as u8, // A
+        0xE0 as u8, 0x90 as u8, 0xE0 as u8, 0x90 as u8, 0xE0 as u8, // B
+        0xF0 as u8, 0x80 as u8, 0x80 as u8, 0x80 as u8, 0xF0 as u8, // C
+        0xE0 as u8, 0x90 as u8, 0x90 as u8, 0x90 as u8, 0xE0 as u8, // D
+        0xF0 as u8, 0x80 as u8, 0xF0 as u8, 0x80 as u8, 0xF0 as u8, // E
+        0xF0 as u8, 0x80 as u8, 0xF0 as u8, 0x80 as u8, 0x80 as u8, // F
+    ]
+
+    let mut fIdx: usize = 0
+    while fIdx < 80 {
+        mem.set(0x050 + fIdx, fontset[fIdx])
+        fIdx = fIdx + 1
+    }
+
+    let mut regV = vec.Vec.new<u8>()
+    let mut rIdx: usize = 0
+    while rIdx < 16 {
+        regV.push(0 as u8)
+        rIdx = rIdx + 1
+    }
+
+    return Cpu {
+        memory: mem,
+        v: regV,
+        indexReg: 0,
+        pc: 0x200,
+        stack: vec.Vec.new<u16>(),
+        disp: display.newDisplay(),
+        keys: keypad.newKeypad(),
+        tm: timers.newTimers(),
+        modernShift: true,
+        modernLoadI: false,
+        rngState: 0x12345678,
+        totalCycles: 0,
+        halted: false,
+    }
+}
+
+/// Reads register `idx` (`0..15`).
+public func Cpu.readV(self: ref Cpu, idx: usize): u8 {
+    if idx >= 16 {
+        return 0
+    }
+    let s = self.v.asSlice()
+    return s[idx]
+}
+
+/// Writes `val` to register `idx` (`0..15`).
+public func Cpu.writeV(self: mut ref Cpu, idx: usize, val: u8): void {
+    if idx < 16 {
+        self.v.set(idx, val)
+    }
+    return
+}
+
+/// Reads memory byte at `addr`.
+public func Cpu.readMem(self: ref Cpu, addr: usize): u8 {
+    if addr >= 4096 {
+        return 0
+    }
+    let s = self.memory.asSlice()
+    return s[addr]
+}
+
+/// Writes `val` to memory at `addr`.
+public func Cpu.writeMem(self: mut ref Cpu, addr: usize, val: u8): void {
+    if addr < 4096 {
+        self.memory.set(addr, val)
+    }
+    return
+}
+
+/// Generates a pseudo-random 8-bit integer using Xorshift32.
+public func Cpu.nextRandomByte(self: mut ref Cpu): u8 {
+    let mut x = self.rngState
+    x = x ^ (x << 13)
+    x = x ^ (x >> 17)
+    x = x ^ (x << 5)
+    self.rngState = x
+    return (x & 0xFF) as u8
+}
+
+/// Loads binary ROM bytes into memory starting at standard offset 0x200.
+public func Cpu.loadRom(self: mut ref Cpu, romBytes: []u8): bool {
+    let romLen = slice.len<u8>(romBytes)
+    if romLen > (4096 - 0x200) {
+        return false
+    }
+    let mut i: usize = 0
+    while i < romLen {
+        self.memory.set(0x200 + i, romBytes[i])
+        i = i + 1
+    }
+    self.pc = 0x200
+    self.halted = false
+    return true
+}
+
+/// Steps the CPU by executing a single 16-bit instruction.
+/// Returns true if execution succeeded, or false if CPU halted or out of bounds.
+public func Cpu.step(self: mut ref Cpu): bool {
+    if self.halted {
+        return false
+    }
+    let pcIdx = self.pc as usize
+    if pcIdx + 1 >= 4096 {
+        self.halted = true
+        return false
+    }
+
+    let memSlice = self.memory.asSlice()
+    let b0 = memSlice[pcIdx] as u16
+    let b1 = memSlice[pcIdx + 1] as u16
+    let op = (b0 << 8) | b1
+
+    self.pc = self.pc + 2
+    self.totalCycles = self.totalCycles + 1
+
+    let prefix = (op >> 12) & 0x0F
+    let x = ((op >> 8) & 0x0F) as usize
+    let y = ((op >> 4) & 0x0F) as usize
+    let n = (op & 0x0F) as u8
+    let nn = (op & 0xFF) as u8
+    let nnn = op & 0x0FFF
+
+    if prefix == 0x0 {
+        if op == 0x00E0 {
+            // CLS: Clear display
+            self.disp.clear()
+        } else if op == 0x00EE {
+            // RET: Return from subroutine
+            match self.stack.pop() {
+                Some(returnAddr) => {
+                    self.pc = returnAddr
+                }
+                None => {
+                    self.halted = true
+                    return false
+                }
+            }
+        }
+    } else if prefix == 0x1 {
+        // JP nnn
+        self.pc = nnn
+    } else if prefix == 0x2 {
+        // CALL nnn
+        self.stack.push(self.pc)
+        self.pc = nnn
+    } else if prefix == 0x3 {
+        // SE Vx, nn
+        let vxVal = self.readV(x)
+        if vxVal == nn {
+            self.pc = self.pc + 2
+        }
+    } else if prefix == 0x4 {
+        // SNE Vx, nn
+        let vxVal = self.readV(x)
+        if vxVal != nn {
+            self.pc = self.pc + 2
+        }
+    } else if prefix == 0x5 {
+        // SE Vx, Vy
+        if (op & 0x0F) == 0 {
+            let vxVal = self.readV(x)
+            let vyVal = self.readV(y)
+            if vxVal == vyVal {
+                self.pc = self.pc + 2
+            }
+        }
+    } else if prefix == 0x6 {
+        // LD Vx, nn
+        self.writeV(x, nn)
+    } else if prefix == 0x7 {
+        // ADD Vx, nn (no carry flag)
+        let vxVal = self.readV(x)
+        let sum = ((vxVal as u16) + (nn as u16)) & 0xFF
+        self.writeV(x, sum as u8)
+    } else if prefix == 0x8 {
+        let subOp = op & 0x0F
+        if subOp == 0x0 {
+            // LD Vx, Vy
+            let vyVal = self.readV(y)
+            self.writeV(x, vyVal)
+        } else if subOp == 0x1 {
+            // OR Vx, Vy
+            let res = self.readV(x) | self.readV(y)
+            self.writeV(x, res)
+        } else if subOp == 0x2 {
+            // AND Vx, Vy
+            let res = self.readV(x) & self.readV(y)
+            self.writeV(x, res)
+        } else if subOp == 0x3 {
+            // XOR Vx, Vy
+            let res = self.readV(x) ^ self.readV(y)
+            self.writeV(x, res)
+        } else if subOp == 0x4 {
+            // ADD Vx, Vy (with carry in VF)
+            let vxVal = self.readV(x) as u16
+            let vyVal = self.readV(y) as u16
+            let sum = vxVal + vyVal
+            let carry: u8 = if sum > 255 { 1 } else { 0 }
+            self.writeV(x, (sum & 0xFF) as u8)
+            self.writeV(0xF, carry)
+        } else if subOp == 0x5 {
+            // SUB Vx, Vy (VF = not borrow: 1 if Vx >= Vy, 0 if borrow)
+            let vxVal = self.readV(x)
+            let vyVal = self.readV(y)
+            let notBorrow: u8 = if vxVal >= vyVal { 1 } else { 0 }
+            let diff = ((vxVal as i16) - (vyVal as i16)) & 0xFF
+            self.writeV(x, diff as u8)
+            self.writeV(0xF, notBorrow)
+        } else if subOp == 0x6 {
+            // SHR Vx {, Vy}
+            let mut val = if self.modernShift { self.readV(x) } else { self.readV(y) }
+            let lsb = val & 1
+            val = val >> 1
+            self.writeV(x, val)
+            self.writeV(0xF, lsb)
+        } else if subOp == 0x7 {
+            // SUBN Vx, Vy (VF = not borrow: 1 if Vy >= Vx, 0 if borrow)
+            let vxVal = self.readV(x)
+            let vyVal = self.readV(y)
+            let notBorrow: u8 = if vyVal >= vxVal { 1 } else { 0 }
+            let diff = ((vyVal as i16) - (vxVal as i16)) & 0xFF
+            self.writeV(x, diff as u8)
+            self.writeV(0xF, notBorrow)
+        } else if subOp == 0xE {
+            // SHL Vx {, Vy}
+            let mut val = if self.modernShift { self.readV(x) } else { self.readV(y) }
+            let msb = (val >> 7) & 1
+            val = (val << 1) & 0xFF
+            self.writeV(x, val)
+            self.writeV(0xF, msb)
+        }
+    } else if prefix == 0x9 {
+        // SNE Vx, Vy
+        if (op & 0x0F) == 0 {
+            let vxVal = self.readV(x)
+            let vyVal = self.readV(y)
+            if vxVal != vyVal {
+                self.pc = self.pc + 2
+            }
+        }
+    } else if prefix == 0xA {
+        // LD I, nnn
+        self.indexReg = nnn
+    } else if prefix == 0xB {
+        // JP V0, nnn
+        let v0Val = self.readV(0) as u16
+        self.pc = nnn + v0Val
+    } else if prefix == 0xC {
+        // RND Vx, nn
+        let rnd = self.nextRandomByte()
+        self.writeV(x, rnd & nn)
+    } else if prefix == 0xD {
+        // DRW Vx, Vy, nibble
+        let vxVal = self.readV(x) as usize
+        let vyVal = self.readV(y) as usize
+        let numBytes = n as usize
+
+        let mut spriteVec = vec.Vec.new<u8>()
+        let mut sIdx: usize = 0
+        while sIdx < numBytes {
+            let addr = (self.indexReg as usize) + sIdx
+            spriteVec.push(self.readMem(addr))
+            sIdx = sIdx + 1
+        }
+
+        let collision = self.disp.drawSprite(vxVal, vyVal, spriteVec.asSlice())
+        self.writeV(0xF, if collision { 1 as u8 } else { 0 as u8 })
+    } else if prefix == 0xE {
+        let subOp = op & 0xFF
+        let vxVal = self.readV(x)
+        if subOp == 0x9E {
+            // SKP Vx
+            if self.keys.isPressed(vxVal) {
+                self.pc = self.pc + 2
+            }
+        } else if subOp == 0xA1 {
+            // SKNP Vx
+            if !self.keys.isPressed(vxVal) {
+                self.pc = self.pc + 2
+            }
+        }
+    } else if prefix == 0xF {
+        let subOp = op & 0xFF
+        if subOp == 0x07 {
+            // LD Vx, DT
+            self.writeV(x, self.tm.getDelay())
+        } else if subOp == 0x0A {
+            // LD Vx, K (wait for keypress)
+            match self.keys.getFirstPressed() {
+                Some(pressedKey) => {
+                    self.writeV(x, pressedKey)
+                }
+                None => {
+                    // Repeat instruction until a key is pressed
+                    self.pc = self.pc - 2
+                }
+            }
+        } else if subOp == 0x15 {
+            // LD DT, Vx
+            self.tm.setDelay(self.readV(x))
+        } else if subOp == 0x18 {
+            // LD ST, Vx
+            self.tm.setSound(self.readV(x))
+        } else if subOp == 0x1E {
+            // ADD I, Vx
+            let vxVal = self.readV(x) as u16
+            self.indexReg = (self.indexReg + vxVal) & 0x0FFF
+        } else if subOp == 0x29 {
+            // LD F, Vx (font sprite address: 0x050 + (Vx & 0xF) * 5)
+            let digit = (self.readV(x) & 0x0F) as u16
+            self.indexReg = 0x050 + (digit * 5)
+        } else if subOp == 0x33 {
+            // LD B, Vx (store BCD at I, I+1, I+2)
+            let val = self.readV(x)
+            let hundreds = val / 100
+            let tens = (val / 10) % 10
+            let units = val % 10
+            let iAddr = self.indexReg as usize
+            if iAddr + 2 < 4096 {
+                self.writeMem(iAddr, hundreds)
+                self.writeMem(iAddr + 1, tens)
+                self.writeMem(iAddr + 2, units)
+            }
+        } else if subOp == 0x55 {
+            // LD [I], Vx (store V0..Vx to memory)
+            let mut regIdx: usize = 0
+            while regIdx <= x {
+                let addr = (self.indexReg as usize) + regIdx
+                self.writeMem(addr, self.readV(regIdx))
+                regIdx = regIdx + 1
+            }
+            if !self.modernLoadI {
+                self.indexReg = (self.indexReg + (x as u16) + 1) & 0x0FFF
+            }
+        } else if subOp == 0x65 {
+            // LD Vx, [I] (read V0..Vx from memory)
+            let mut regIdx: usize = 0
+            while regIdx <= x {
+                let addr = (self.indexReg as usize) + regIdx
+                self.writeV(regIdx, self.readMem(addr))
+                regIdx = regIdx + 1
+            }
+            if !self.modernLoadI {
+                self.indexReg = (self.indexReg + (x as u16) + 1) & 0x0FFF
+            }
+        }
+    }
+    return true
+}

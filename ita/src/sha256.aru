@@ -1,0 +1,678 @@
+module sha256
+
+import std.core.slice as slice
+
+// ─── SHA-256 round constants ──────────────────────────────────────────────────
+// K[i] = floor(cbrt(prime[i]) * 2^32), first 64 primes.
+// Built here as literals so the compiler can place them in .rodata.
+// A comptime-constructed fixed array would be ideal, but literal initialisation
+// is equally allocation-free.
+
+func k0(): u32 { return 0x428a2f98 }
+func k1(): u32 { return 0x71374491 }
+func k2(): u32 { return 0xb5c0fbcf }
+func k3(): u32 { return 0xe9b5dba5 }
+func k4(): u32 { return 0x3956c25b }
+func k5(): u32 { return 0x59f111f1 }
+func k6(): u32 { return 0x923f82a4 }
+func k7(): u32 { return 0xab1c5ed5 }
+func k8(): u32 { return 0xd807aa98 }
+func k9(): u32 { return 0x12835b01 }
+func k10(): u32 { return 0x243185be }
+func k11(): u32 { return 0x550c7dc3 }
+func k12(): u32 { return 0x72be5d74 }
+func k13(): u32 { return 0x80deb1fe }
+func k14(): u32 { return 0x9bdc06a7 }
+func k15(): u32 { return 0xc19bf174 }
+func k16(): u32 { return 0xe49b69c1 }
+func k17(): u32 { return 0xefbe4786 }
+func k18(): u32 { return 0x0fc19dc6 }
+func k19(): u32 { return 0x240ca1cc }
+func k20(): u32 { return 0x2de92c6f }
+func k21(): u32 { return 0x4a7484aa }
+func k22(): u32 { return 0x5cb0a9dc }
+func k23(): u32 { return 0x76f988da }
+func k24(): u32 { return 0x983e5152 }
+func k25(): u32 { return 0xa831c66d }
+func k26(): u32 { return 0xb00327c8 }
+func k27(): u32 { return 0xbf597fc7 }
+func k28(): u32 { return 0xc6e00bf3 }
+func k29(): u32 { return 0xd5a79147 }
+func k30(): u32 { return 0x06ca6351 }
+func k31(): u32 { return 0x14292967 }
+func k32(): u32 { return 0x27b70a85 }
+func k33(): u32 { return 0x2e1b2138 }
+func k34(): u32 { return 0x4d2c6dfc }
+func k35(): u32 { return 0x53380d13 }
+func k36(): u32 { return 0x650a7354 }
+func k37(): u32 { return 0x766a0abb }
+func k38(): u32 { return 0x81c2c92e }
+func k39(): u32 { return 0x92722c85 }
+func k40(): u32 { return 0xa2bfe8a1 }
+func k41(): u32 { return 0xa81a664b }
+func k42(): u32 { return 0xc24b8b70 }
+func k43(): u32 { return 0xc76c51a3 }
+func k44(): u32 { return 0xd192e819 }
+func k45(): u32 { return 0xd6990624 }
+func k46(): u32 { return 0xf40e3585 }
+func k47(): u32 { return 0x106aa070 }
+func k48(): u32 { return 0x19a4c116 }
+func k49(): u32 { return 0x1e376c08 }
+func k50(): u32 { return 0x2748774c }
+func k51(): u32 { return 0x34b0bcb5 }
+func k52(): u32 { return 0x391c0cb3 }
+func k53(): u32 { return 0x4ed8aa4a }
+func k54(): u32 { return 0x5b9cca4f }
+func k55(): u32 { return 0x682e6ff3 }
+func k56(): u32 { return 0x748f82ee }
+func k57(): u32 { return 0x78a5636f }
+func k58(): u32 { return 0x84c87814 }
+func k59(): u32 { return 0x8cc70208 }
+func k60(): u32 { return 0x90befffa }
+func k61(): u32 { return 0xa4506ceb }
+func k62(): u32 { return 0xbef9a3f7 }
+func k63(): u32 { return 0xc67178f2 }
+
+func kAt(i: uint): u32 {
+    if i == 0  { return k0()  }
+    if i == 1  { return k1()  }
+    if i == 2  { return k2()  }
+    if i == 3  { return k3()  }
+    if i == 4  { return k4()  }
+    if i == 5  { return k5()  }
+    if i == 6  { return k6()  }
+    if i == 7  { return k7()  }
+    if i == 8  { return k8()  }
+    if i == 9  { return k9()  }
+    if i == 10 { return k10() }
+    if i == 11 { return k11() }
+    if i == 12 { return k12() }
+    if i == 13 { return k13() }
+    if i == 14 { return k14() }
+    if i == 15 { return k15() }
+    if i == 16 { return k16() }
+    if i == 17 { return k17() }
+    if i == 18 { return k18() }
+    if i == 19 { return k19() }
+    if i == 20 { return k20() }
+    if i == 21 { return k21() }
+    if i == 22 { return k22() }
+    if i == 23 { return k23() }
+    if i == 24 { return k24() }
+    if i == 25 { return k25() }
+    if i == 26 { return k26() }
+    if i == 27 { return k27() }
+    if i == 28 { return k28() }
+    if i == 29 { return k29() }
+    if i == 30 { return k30() }
+    if i == 31 { return k31() }
+    if i == 32 { return k32() }
+    if i == 33 { return k33() }
+    if i == 34 { return k34() }
+    if i == 35 { return k35() }
+    if i == 36 { return k36() }
+    if i == 37 { return k37() }
+    if i == 38 { return k38() }
+    if i == 39 { return k39() }
+    if i == 40 { return k40() }
+    if i == 41 { return k41() }
+    if i == 42 { return k42() }
+    if i == 43 { return k43() }
+    if i == 44 { return k44() }
+    if i == 45 { return k45() }
+    if i == 46 { return k46() }
+    if i == 47 { return k47() }
+    if i == 48 { return k48() }
+    if i == 49 { return k49() }
+    if i == 50 { return k50() }
+    if i == 51 { return k51() }
+    if i == 52 { return k52() }
+    if i == 53 { return k53() }
+    if i == 54 { return k54() }
+    if i == 55 { return k55() }
+    if i == 56 { return k56() }
+    if i == 57 { return k57() }
+    if i == 58 { return k58() }
+    if i == 59 { return k59() }
+    if i == 60 { return k60() }
+    if i == 61 { return k61() }
+    if i == 62 { return k62() }
+    return k63()
+}
+
+// ─── Bit-rotation helpers ─────────────────────────────────────────────────────
+// These small functions are inlining targets. In the assembly, the compiler
+// should emit `ror` (rotate-right) instructions and no function calls.
+
+func rotr32(x: u32, n: u32): u32 {
+    return (x >> n) | (x << ((32 as u32) - n))
+}
+
+func ch(e: u32, f: u32, g: u32): u32 {
+    return (e & f) ^ ((~e) & g)
+}
+
+func maj(a: u32, b: u32, c: u32): u32 {
+    return (a & b) ^ (a & c) ^ (b & c)
+}
+
+func sigma0(a: u32): u32 {
+    return rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)
+}
+
+func sigma1(e: u32): u32 {
+    return rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)
+}
+
+func gamma0(x: u32): u32 {
+    return rotr32(x, 7) ^ rotr32(x, 18) ^ (x >> 3)
+}
+
+func gamma1(x: u32): u32 {
+    return rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10)
+}
+
+// ─── Big-endian u32 load from byte slice ─────────────────────────────────────
+func beU32(b: []u8, off: usize): u32 {
+    let b0 = b[off]     as u32
+    let b1 = b[off + 1] as u32
+    let b2 = b[off + 2] as u32
+    let b3 = b[off + 3] as u32
+    return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+}
+
+// ─── SHA-256 state ────────────────────────────────────────────────────────────
+
+/// SHA-256 incremental hash state. Lives entirely on the stack — no heap
+/// allocation. The eight `u32` words in the hash state are the primary target
+/// for struct-by-value / register-passing analysis: if Cranelift copies them
+/// through the stack on every `compress` call, it is a codegen regression.
+public struct Sha256State {
+    /// Hash chaining values (a..h).
+    public h0: u32
+    public h1: u32
+    public h2: u32
+    public h3: u32
+    public h4: u32
+    public h5: u32
+    public h6: u32
+    public h7: u32
+    /// Partial block buffer (64 bytes).
+    public buf: [64]u8
+    /// How many bytes are in the partial buffer.
+    public buf_len: usize
+    /// Total bytes processed so far.
+    public total_bytes: u64
+}
+
+/// Returns the initial SHA-256 state with the standard IV.
+public func sha256Init(): Sha256State {
+    return Sha256State {
+        h0: 0x6a09e667, h1: 0xbb67ae85,
+        h2: 0x3c6ef372, h3: 0xa54ff53a,
+        h4: 0x510e527f, h5: 0x9b05688c,
+        h6: 0x1f83d9ab, h7: 0x5be0cd19,
+        buf: [0 as u8; 64],
+        buf_len: 0,
+        total_bytes: 0,
+    }
+}
+
+/// Reads one byte from the buffer by index.
+func bufGet(state: ref Sha256State, i: usize): u8 {
+    return state.buf[i]
+}
+
+func bufSet(state: mut ref Sha256State, i: usize, v: u8): void {
+    state.buf[i] = v
+}
+
+func beU32Buf(state: ref Sha256State, off: usize): u32 {
+    let b0 = bufGet(state, off)     as u32
+    let b1 = bufGet(state, off + 1) as u32
+    let b2 = bufGet(state, off + 2) as u32
+    let b3 = bufGet(state, off + 3) as u32
+    return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+}
+
+/// Compress one 64-byte block into the state.
+public func sha256Compress(state: mut ref Sha256State): void {
+    // Load the 16 message schedule words from big-endian block.
+    let w0  = beU32Buf(state, 0)
+    let w1  = beU32Buf(state, 4)
+    let w2  = beU32Buf(state, 8)
+    let w3  = beU32Buf(state, 12)
+    let w4  = beU32Buf(state, 16)
+    let w5  = beU32Buf(state, 20)
+    let w6  = beU32Buf(state, 24)
+    let w7  = beU32Buf(state, 28)
+    let w8  = beU32Buf(state, 32)
+    let w9  = beU32Buf(state, 36)
+    let w10 = beU32Buf(state, 40)
+    let w11 = beU32Buf(state, 44)
+    let w12 = beU32Buf(state, 48)
+    let w13 = beU32Buf(state, 52)
+    let w14 = beU32Buf(state, 56)
+    let w15 = beU32Buf(state, 60)
+
+    // Expand to full 64-word schedule.
+    let w16 = gamma1(w14) + w9  + gamma0(w1)  + w0
+    let w17 = gamma1(w15) + w10 + gamma0(w2)  + w1
+    let w18 = gamma1(w16) + w11 + gamma0(w3)  + w2
+    let w19 = gamma1(w17) + w12 + gamma0(w4)  + w3
+    let w20 = gamma1(w18) + w13 + gamma0(w5)  + w4
+    let w21 = gamma1(w19) + w14 + gamma0(w6)  + w5
+    let w22 = gamma1(w20) + w15 + gamma0(w7)  + w6
+    let w23 = gamma1(w21) + w16 + gamma0(w8)  + w7
+    let w24 = gamma1(w22) + w17 + gamma0(w9)  + w8
+    let w25 = gamma1(w23) + w18 + gamma0(w10) + w9
+    let w26 = gamma1(w24) + w19 + gamma0(w11) + w10
+    let w27 = gamma1(w25) + w20 + gamma0(w12) + w11
+    let w28 = gamma1(w26) + w21 + gamma0(w13) + w12
+    let w29 = gamma1(w27) + w22 + gamma0(w14) + w13
+    let w30 = gamma1(w28) + w23 + gamma0(w15) + w14
+    let w31 = gamma1(w29) + w24 + gamma0(w16) + w15
+    let w32 = gamma1(w30) + w25 + gamma0(w17) + w16
+    let w33 = gamma1(w31) + w26 + gamma0(w18) + w17
+    let w34 = gamma1(w32) + w27 + gamma0(w19) + w18
+    let w35 = gamma1(w33) + w28 + gamma0(w20) + w19
+    let w36 = gamma1(w34) + w29 + gamma0(w21) + w20
+    let w37 = gamma1(w35) + w30 + gamma0(w22) + w21
+    let w38 = gamma1(w36) + w31 + gamma0(w23) + w22
+    let w39 = gamma1(w37) + w32 + gamma0(w24) + w23
+    let w40 = gamma1(w38) + w33 + gamma0(w25) + w24
+    let w41 = gamma1(w39) + w34 + gamma0(w26) + w25
+    let w42 = gamma1(w40) + w35 + gamma0(w27) + w26
+    let w43 = gamma1(w41) + w36 + gamma0(w28) + w27
+    let w44 = gamma1(w42) + w37 + gamma0(w29) + w28
+    let w45 = gamma1(w43) + w38 + gamma0(w30) + w29
+    let w46 = gamma1(w44) + w39 + gamma0(w31) + w30
+    let w47 = gamma1(w45) + w40 + gamma0(w32) + w31
+    let w48 = gamma1(w46) + w41 + gamma0(w33) + w32
+    let w49 = gamma1(w47) + w42 + gamma0(w34) + w33
+    let w50 = gamma1(w48) + w43 + gamma0(w35) + w34
+    let w51 = gamma1(w49) + w44 + gamma0(w36) + w35
+    let w52 = gamma1(w50) + w45 + gamma0(w37) + w36
+    let w53 = gamma1(w51) + w46 + gamma0(w38) + w37
+    let w54 = gamma1(w52) + w47 + gamma0(w39) + w38
+    let w55 = gamma1(w53) + w48 + gamma0(w40) + w39
+    let w56 = gamma1(w54) + w49 + gamma0(w41) + w40
+    let w57 = gamma1(w55) + w50 + gamma0(w42) + w41
+    let w58 = gamma1(w56) + w51 + gamma0(w43) + w42
+    let w59 = gamma1(w57) + w52 + gamma0(w44) + w43
+    let w60 = gamma1(w58) + w53 + gamma0(w45) + w44
+    let w61 = gamma1(w59) + w54 + gamma0(w46) + w45
+    let w62 = gamma1(w60) + w55 + gamma0(w47) + w46
+    let w63 = gamma1(w61) + w56 + gamma0(w48) + w47
+
+    // Working variables.
+    let mut a = state.h0
+    let mut b = state.h1
+    let mut c = state.h2
+    let mut d = state.h3
+    let mut e = state.h4
+    let mut f = state.h5
+    let mut g = state.h6
+    let mut h = state.h7
+
+    // 64 rounds (fully unrolled — no loop, no loop counter in registers).
+    // Each round: T1 = h + Sigma1(e) + Ch(e,f,g) + K[i] + W[i]
+    //             T2 = Sigma0(a) + Maj(a,b,c)
+    //             h=g g=f f=e e=d+T1 d=c c=b b=a a=T1+T2
+
+    let mut t1: u32 = 0
+    let mut t2: u32 = 0
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k0()  + w0
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k1()  + w1
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k2()  + w2
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k3()  + w3
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k4()  + w4
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k5()  + w5
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k6()  + w6
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k7()  + w7
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k8()  + w8
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k9()  + w9
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k10() + w10
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k11() + w11
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k12() + w12
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k13() + w13
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k14() + w14
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k15() + w15
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k16() + w16
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k17() + w17
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k18() + w18
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k19() + w19
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k20() + w20
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k21() + w21
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k22() + w22
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k23() + w23
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k24() + w24
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k25() + w25
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k26() + w26
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k27() + w27
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k28() + w28
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k29() + w29
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k30() + w30
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k31() + w31
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k32() + w32
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k33() + w33
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k34() + w34
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k35() + w35
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k36() + w36
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k37() + w37
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k38() + w38
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k39() + w39
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k40() + w40
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k41() + w41
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k42() + w42
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k43() + w43
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k44() + w44
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k45() + w45
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k46() + w46
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k47() + w47
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k48() + w48
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k49() + w49
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k50() + w50
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k51() + w51
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k52() + w52
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k53() + w53
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k54() + w54
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k55() + w55
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k56() + w56
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k57() + w57
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k58() + w58
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k59() + w59
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k60() + w60
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k61() + w61
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k62() + w62
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    t1 = h + sigma1(e) + ch(e, f, g) + k63() + w63
+    t2 = sigma0(a) + maj(a, b, c)
+    h = g  g = f  f = e  e = d + t1  d = c  c = b  b = a  a = t1 + t2
+
+    // Add compressed chunk to current hash value.
+    state.h0 = state.h0 + a
+    state.h1 = state.h1 + b
+    state.h2 = state.h2 + c
+    state.h3 = state.h3 + d
+    state.h4 = state.h4 + e
+    state.h5 = state.h5 + f
+    state.h6 = state.h6 + g
+    state.h7 = state.h7 + h
+}
+
+/// Update the hash state with an arbitrary number of bytes.
+/// Buffers partial 64-byte blocks; calls `sha256Compress` for each complete block.
+public func sha256Update(state: mut ref Sha256State, data: []u8): void {
+    let dlen = slice.len<u8>(data)
+    let mut di: usize = 0
+    while di < dlen {
+        bufSet(state, state.buf_len, data[di])
+        state.buf_len = state.buf_len + 1
+        state.total_bytes = state.total_bytes + 1
+        di = di + 1
+        if state.buf_len == 64 {
+            sha256Compress(state)
+            state.buf_len = 0
+        }
+    }
+}
+
+/// Finalize the hash: pad the message, compress the final block(s), return 32-byte digest.
+public func sha256Finalize(state: mut ref Sha256State): [32]u8 {
+    let bit_len: u64 = state.total_bytes * 8
+
+    // Append 0x80 byte.
+    bufSet(state, state.buf_len, 0x80)
+    state.buf_len = state.buf_len + 1
+
+    // Pad with zeros until 56 bytes used (8 bytes reserved for length).
+    while state.buf_len < 56 {
+        bufSet(state, state.buf_len, 0)
+        state.buf_len = state.buf_len + 1
+    }
+
+    // If we already passed 56 bytes, flush and do a second pad block.
+    if state.buf_len > 56 {
+        while state.buf_len < 64 {
+            bufSet(state, state.buf_len, 0)
+            state.buf_len = state.buf_len + 1
+        }
+        sha256Compress(state)
+        state.buf_len = 0
+        while state.buf_len < 56 {
+            bufSet(state, state.buf_len, 0)
+            state.buf_len = state.buf_len + 1
+        }
+    }
+
+    // Append 64-bit big-endian bit length.
+    bufSet(state, 56, ((bit_len >> 56) & 0xff) as u8)
+    bufSet(state, 57, ((bit_len >> 48) & 0xff) as u8)
+    bufSet(state, 58, ((bit_len >> 40) & 0xff) as u8)
+    bufSet(state, 59, ((bit_len >> 32) & 0xff) as u8)
+    bufSet(state, 60, ((bit_len >> 24) & 0xff) as u8)
+    bufSet(state, 61, ((bit_len >> 16) & 0xff) as u8)
+    bufSet(state, 62, ((bit_len >> 8)  & 0xff) as u8)
+    bufSet(state, 63, ( bit_len        & 0xff) as u8)
+    state.buf_len = 64
+
+    sha256Compress(state)
+
+    // Build the 32-byte digest in big-endian.
+    let digest: [32]u8 = [
+        ((state.h0 >> 24) & 0xff) as u8, ((state.h0 >> 16) & 0xff) as u8,
+        ((state.h0 >>  8) & 0xff) as u8, ( state.h0        & 0xff) as u8,
+        ((state.h1 >> 24) & 0xff) as u8, ((state.h1 >> 16) & 0xff) as u8,
+        ((state.h1 >>  8) & 0xff) as u8, ( state.h1        & 0xff) as u8,
+        ((state.h2 >> 24) & 0xff) as u8, ((state.h2 >> 16) & 0xff) as u8,
+        ((state.h2 >>  8) & 0xff) as u8, ( state.h2        & 0xff) as u8,
+        ((state.h3 >> 24) & 0xff) as u8, ((state.h3 >> 16) & 0xff) as u8,
+        ((state.h3 >>  8) & 0xff) as u8, ( state.h3        & 0xff) as u8,
+        ((state.h4 >> 24) & 0xff) as u8, ((state.h4 >> 16) & 0xff) as u8,
+        ((state.h4 >>  8) & 0xff) as u8, ( state.h4        & 0xff) as u8,
+        ((state.h5 >> 24) & 0xff) as u8, ((state.h5 >> 16) & 0xff) as u8,
+        ((state.h5 >>  8) & 0xff) as u8, ( state.h5        & 0xff) as u8,
+        ((state.h6 >> 24) & 0xff) as u8, ((state.h6 >> 16) & 0xff) as u8,
+        ((state.h6 >>  8) & 0xff) as u8, ( state.h6        & 0xff) as u8,
+        ((state.h7 >> 24) & 0xff) as u8, ((state.h7 >> 16) & 0xff) as u8,
+        ((state.h7 >>  8) & 0xff) as u8, ( state.h7        & 0xff) as u8,
+    ]
+    return digest
+}
+
+/// Hash a complete byte slice in one shot. Convenience wrapper.
+public func sha256Bytes(data: []u8): [32]u8 {
+    let mut state = sha256Init()
+    sha256Update(mut ref state, data)
+    return sha256Finalize(mut ref state)
+}

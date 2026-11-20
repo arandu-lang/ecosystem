@@ -1,0 +1,141 @@
+module context
+
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+import std.core.str as strings
+import self.value as value
+from self.value import { ValueKind }
+
+/// An entry pairing a key string with a Value.
+public struct ContextEntry {
+    public key: ownedStrings.String
+    public val: value.Value
+}
+
+/// A variable store supplying data to templates during rendering.
+public struct Context {
+    public entries: vec.Vec<ContextEntry>
+}
+
+/// Creates a new empty evaluation context.
+public func newContext(): Context {
+    return Context {
+        entries: vec.Vec.new<ContextEntry>(),
+    }
+}
+
+/// Compares two byte slices for equality.
+func bytesEqual(a: []u8, b: []u8): bool {
+    if a.len != b.len {
+        return false
+    }
+    let mut i: usize = 0
+    while i < a.len {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Sets or overrides a Value under the given key.
+public func setVar(self: mut ref Context, key: str, val: value.Value): void {
+    let keyBytes = key.asBytes()
+    let s = self.entries.asSlice()
+    let n = s.len
+    let mut i: usize = 0
+    while i < n {
+        let entry = ref s[i]
+        let entryBytes = entry.key.asBytes()
+        if bytesEqual(keyBytes, entryBytes) {
+            let replaced = self.entries.set(i, ContextEntry {
+                key: ownedStrings.String.from(key),
+                val: val,
+            })
+            return
+        }
+        i = i + 1
+    }
+
+    self.entries.push(ContextEntry {
+        key: ownedStrings.String.from(key),
+        val: val,
+    })
+    return
+}
+
+/// Convenience method to set a string variable.
+public func setStr(self: mut ref Context, key: str, val: str): void {
+    setVar(self, key, value.newStr(val))
+    return
+}
+
+/// Convenience method to set an integer variable.
+public func setInt(self: mut ref Context, key: str, val: i64): void {
+    setVar(self, key, value.newInt(val))
+    return
+}
+
+/// Convenience method to set a boolean variable.
+public func setBool(self: mut ref Context, key: str, val: bool): void {
+    setVar(self, key, value.newBool(val))
+    return
+}
+
+/// Convenience method to set a list-of-strings variable.
+public func setList(self: mut ref Context, key: str, items: []str): void {
+    setVar(self, key, value.newList(items))
+    return
+}
+
+/// Retrieves a value by key. Returns a Null value if the key does not exist.
+public func getVar(self: ref Context, key: str): value.Value {
+    let keyBytes = key.asBytes()
+    let s = self.entries.asSlice()
+    let n = s.len
+    let mut i: usize = 0
+    while i < n {
+        let entry = ref s[i]
+        let entryKey = entry.key.asBytes()
+        if bytesEqual(keyBytes, entryKey) {
+            let found = ref entry.val
+            // Return a copy of found value
+            match found.kind {
+                ValueKind.Null => {
+                    return value.newNull()
+                }
+                ValueKind.Bool => {
+                    return value.newBool(found.boolVal)
+                }
+                ValueKind.Int => {
+                    return value.newInt(found.intVal)
+                }
+                ValueKind.Str => {
+                    return value.newStr(found.strVal.asStr())
+                }
+                ValueKind.List => {
+                    let mut clonedList = vec.Vec.new<ownedStrings.String>()
+                    let listSlice = found.listVal.asSlice()
+                    let listLen = listSlice.len
+                    let mut j: usize = 0
+                    while j < listLen {
+                        let item = ref listSlice[j]
+                        clonedList.push(ownedStrings.String.from(item.asStr()))
+                        j = j + 1
+                    }
+                    return value.Value {
+                        kind: ValueKind.List,
+                        boolVal: false,
+                        intVal: 0,
+                        strVal: ownedStrings.String.new(),
+                        listVal: clonedList,
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return value.newNull()
+}

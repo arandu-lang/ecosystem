@@ -1,0 +1,91 @@
+module search
+
+import std.alloc.string as ownedStrings
+import std.alloc.vec as vec
+import std.core.slice as slice
+import std.core.str as strings
+
+/// In-memory index entry pointing to a file offset in the append-only log.
+public struct IndexEntry {
+    public key: ownedStrings.String
+    public offset: u64
+    public deleted: bool
+}
+
+/// Lexicographic byte-wise comparison of two keys.
+///
+/// The language provides no ordering operator for strings, so the keys are
+/// compared as UTF-8 byte slices. Returns -1, 0 or 1.
+public func compareKeys(a: str, b: str): int {
+    let ab = strings.asBytes(a)
+    let bb = strings.asBytes(b)
+    let an = slice.len<u8>(ab)
+    let bn = slice.len<u8>(bb)
+    let mut i: usize = 0
+    while i < an && i < bn {
+        if ab[i] < bb[i] {
+            return -1
+        }
+        if ab[i] > bb[i] {
+            return 1
+        }
+        i = i + 1
+    }
+    if an < bn {
+        return -1
+    }
+    if an > bn {
+        return 1
+    }
+    return 0
+}
+
+/// Binary search for an exact key match in a sorted slice of IndexEntry.
+/// Returns Some(index) if found, None otherwise.
+public func binarySearch(entries: []IndexEntry, key: str): Option<usize> {
+    let n = slice.len<IndexEntry>(entries)
+    if n == 0 {
+        return Option.None
+    }
+
+    let mut low: usize = 0
+    let mut high: usize = n
+
+    while low < high {
+        let mid = low + (high - low) / 2
+        let mid_entry = ref entries[mid]
+        let mid_key = mid_entry.key.asStr()
+        let ord = compareKeys(mid_key, key)
+
+        if ord == 0 {
+            return Option.Some(mid)
+        } else if ord < 0 {
+            low = mid + 1
+        } else {
+            high = mid
+        }
+    }
+
+    return Option.None
+}
+
+/// Finds the insertion point for a key in a sorted slice to maintain order.
+public func searchInsertionPoint(entries: []IndexEntry, key: str): usize {
+    let n = slice.len<IndexEntry>(entries)
+    let mut low: usize = 0
+    let mut high: usize = n
+
+    while low < high {
+        let mid = low + (high - low) / 2
+        let mid_entry = ref entries[mid]
+        let mid_key = mid_entry.key.asStr()
+
+        if compareKeys(mid_key, key) < 0 {
+            low = mid + 1
+        } else {
+            high = mid
+        }
+    }
+
+    return low
+}

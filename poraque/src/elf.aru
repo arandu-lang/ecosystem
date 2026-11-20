@@ -1,0 +1,191 @@
+module elf
+
+import io
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+
+public struct Elf64Ehdr {
+    public is_valid: bool
+    public class_type: u8
+    public data_encoding: u8
+    public elf_type: u16
+    public machine: u16
+    public version: u32
+    public entry: u64
+    public phoff: u64
+    public shoff: u64
+    public flags: u32
+    public ehsize: u16
+    public phentsize: u16
+    public phnum: u16
+    public shentsize: u16
+    public shnum: u16
+    public shstrndx: u16
+}
+
+public struct Elf64Shdr {
+    public name_offset: u32
+    public sh_type: u32
+    public flags: u64
+    public addr: u64
+    public offset: u64
+    public size: u64
+    public link: u32
+    public info: u32
+    public addralign: u64
+    public entsize: u64
+}
+
+public func readU16Le(bytes: []u8, off: usize): u16 {
+    return bytes.readU16Le(off) ?? (0 as u16)
+}
+
+public func readU32Le(bytes: []u8, off: usize): u32 {
+    return bytes.readU32Le(off) ?? (0 as u32)
+}
+
+public func readU64Le(bytes: []u8, off: usize): u64 {
+    return bytes.readU64Le(off) ?? (0 as u64)
+}
+
+public func parseEhdr(bytes: []u8): Result<Elf64Ehdr, str> {
+    if bytes.len < 64 {
+        return Result.Err("file is too short for ELF64 header")
+    }
+
+    // Check ELF magic: 0x7F 'E' 'L' 'F'
+    if bytes[0] != 0x7f || bytes[1] != b'E' || bytes[2] != b'L' || bytes[3] != b'F' {
+        return Result.Err("not an ELF file (invalid magic)")
+    }
+
+    let ehdr = Elf64Ehdr {
+        is_valid: true,
+        class_type: bytes[4],
+        data_encoding: bytes[5],
+        elf_type: readU16Le(bytes, 16),
+        machine: readU16Le(bytes, 18),
+        version: readU32Le(bytes, 20),
+        entry: readU64Le(bytes, 24),
+        phoff: readU64Le(bytes, 32),
+        shoff: readU64Le(bytes, 40),
+        flags: readU32Le(bytes, 48),
+        ehsize: readU16Le(bytes, 52),
+        phentsize: readU16Le(bytes, 54),
+        phnum: readU16Le(bytes, 56),
+        shentsize: readU16Le(bytes, 58),
+        shnum: readU16Le(bytes, 60),
+        shstrndx: readU16Le(bytes, 62),
+    }
+
+    return Result.Ok(ehdr)
+}
+
+public func parseShdr(bytes: []u8, off: usize): Elf64Shdr {
+    return Elf64Shdr {
+        name_offset: readU32Le(bytes, off),
+        sh_type: readU32Le(bytes, off + 4),
+        flags: readU64Le(bytes, off + 8),
+        addr: readU64Le(bytes, off + 16),
+        offset: readU64Le(bytes, off + 24),
+        size: readU64Le(bytes, off + 32),
+        link: readU32Le(bytes, off + 40),
+        info: readU32Le(bytes, off + 44),
+        addralign: readU64Le(bytes, off + 48),
+        entsize: readU64Le(bytes, off + 56),
+    }
+}
+
+/// Returns the NUL-terminated string that starts at byte offset `off` in `buf`.
+///
+/// The result is an owned `String` because the language exposes no public
+/// byte-slice-to-`str` conversion; callers read it through `asStr()`.
+public func getString(buf: []u8, off: usize): ownedStrings.String {
+    let buf_len = slice.len<u8>(buf)
+    let mut out = ownedStrings.String.new()
+    if off >= buf_len {
+        return out
+    }
+    let mut i = off
+    while i < buf_len && buf[i] != 0 {
+        out.pushScalar(buf[i] as char)
+        i = i + 1
+    }
+    return out
+}
+
+public func elfTypeName(t: u16): str {
+    if t == 1 { return "REL (Relocatable file)" }
+    if t == 2 { return "EXEC (Executable file)" }
+    if t == 3 { return "DYN (Shared object file / PIE)" }
+    if t == 4 { return "CORE (Core dump)" }
+    return "UNKNOWN"
+}
+
+public func elfMachineName(m: u16): str {
+    if m == 0x03 { return "x86 (Intel 80386)" }
+    if m == 0x3e { return "x86_64 (AMD x86-64)" }
+    if m == 0x28 { return "ARM" }
+    if m == 0xb7 { return "AArch64 (ARM 64-bit)" }
+    if m == 0xf3 { return "RISC-V" }
+    return "Unknown Machine"
+}
+
+public func sectionTypeName(t: u32): str {
+    if t == 0 { return "NULL" }
+    if t == 1 { return "PROGBITS" }
+    if t == 2 { return "SYMTAB" }
+    if t == 3 { return "STRTAB" }
+    if t == 4 { return "RELA" }
+    if t == 5 { return "HASH" }
+    if t == 6 { return "DYNAMIC" }
+    if t == 7 { return "NOTE" }
+    if t == 8 { return "NOBITS" }
+    if t == 9 { return "REL" }
+    if t == 11 { return "DYNSYM" }
+    return "OTHER"
+}
+
+public func printElfSummary(bytes: []u8, ehdr: ref Elf64Ehdr): void {
+    io.println("ELF Header:")
+    io.println("  Class:                             ${if ehdr.class_type == 2 { "ELF64" } else { "ELF32" }}")
+    io.println("  Data:                              ${if ehdr.data_encoding == 1 { "2's complement, little endian" } else { "big endian" }}")
+    io.println("  Type:                              ${elfTypeName(ehdr.elf_type)}")
+    io.println("  Machine:                           ${elfMachineName(ehdr.machine)}")
+    io.println("  Entry point address:               0x${ehdr.entry}")
+    io.println("  Start of program headers:          ${ehdr.phoff} (bytes into file)")
+    io.println("  Start of section headers:          ${ehdr.shoff} (bytes into file)")
+    io.println("  Number of program headers:         ${ehdr.phnum}")
+    io.println("  Number of section headers:         ${ehdr.shnum}")
+    io.println("  Section header string table index: ${ehdr.shstrndx}")
+}
+
+public func printSections(bytes: []u8, ehdr: ref Elf64Ehdr): void {
+    let total_len = slice.len<u8>(bytes)
+    let sh_num = ehdr.shnum as usize
+    let sh_ent_size = ehdr.shentsize as usize
+    let sh_off = ehdr.shoff as usize
+
+    if sh_off + sh_num * sh_ent_size > total_len {
+        io.println("poraque: section headers exceed file bounds")
+        return
+    }
+
+    // Locate section name string table (.shstrtab)
+    let strtab_shdr_off = sh_off + (ehdr.shstrndx as usize) * sh_ent_size
+    let strtab_shdr = parseShdr(bytes, strtab_shdr_off)
+    let strtab_base = strtab_shdr.offset as usize
+
+    io.println("  [Nr] Name              Type             Address          Offset    Size")
+    io.println("  ─────────────────────────────────────────────────────────────────────────")
+
+    let mut i: usize = 0
+    while i < sh_num {
+        let entry_off = sh_off + i * sh_ent_size
+        let s = parseShdr(bytes, entry_off)
+        let s_name = getString(bytes, strtab_base + (s.name_offset as usize))
+        let s_type = sectionTypeName(s.sh_type)
+
+        io.println("  [${i}] ${s_name.asStr()}  (${s_type})  off=${s.offset}  size=${s.size}")
+        i = i + 1
+    }
+}

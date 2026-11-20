@@ -1,0 +1,152 @@
+module guara_tests
+
+import std.testing as testing
+import std.alloc.vec as vec
+import self.decoder as decoder
+import self.memory as memory
+import self.cpu as cpu
+
+@Test
+func decode_negative_immediates_sign_extend_properly(): void {
+    // -1 in 12-bit I-type is 0xFFF
+    let inst_i = decoder.encodeI(0xFFF, 1, 0x0, 2, 0x13)
+    testing.expect(decoder.decodeImmI(inst_i) == 0xFFFFFFFF, "I-type -1 sign extension failed")
+
+    // -16 in 12-bit S-type is 0xFF0
+    let inst_s = decoder.encodeS(0xFF0, 2, 1, 0x2, 0x23)
+    testing.expect(decoder.decodeImmS(inst_s) == 0xFFFFFFF0, "S-type -16 sign extension failed")
+
+    // -28 in B-type
+    let inst_b = decoder.encodeB(0xFFFFFFE4, 2, 1, 0x0, 0x63)
+    testing.expect(decoder.decodeImmB(inst_b) == 0xFFFFFFE4, "B-type -28 sign extension failed")
+
+    // -20 in J-type
+    let inst_j = decoder.encodeJ(0xFFFFFFEC, 1, 0x6F)
+    testing.expect(decoder.decodeImmJ(inst_j) == 0xFFFFFFEC, "J-type -20 sign extension failed")
+}
+
+@Test
+func x0_register_is_hardwired_to_zero(): void {
+    let mut mem = memory.newMemory(1024)
+    let mut hart = cpu.newCpu(0, 1024)
+    let mut prog = vec.Vec.new<u32>()
+    // Attempt to write 123 into x0 via ADDI x0, x0, 123
+    prog.push(decoder.encodeI(123, 0, 0x0, 0, 0x13))
+    // Read x0 into x10: ADDI x10, x0, 0
+    prog.push(decoder.encodeI(0, 0, 0x0, 10, 0x13))
+    // ECALL
+    prog.push(0x00000073)
+
+    mem.loadProgramWords(0, prog.asSlice())
+    match hart.run(mut ref mem, 100) {
+        Ok(cycles) => {
+            testing.expect(cycles == 3, "expected 3 cycles")
+            testing.expect(hart.readReg(0) == 0, "x0 must remain 0")
+            testing.expect(hart.readReg(10) == 0, "x10 copied from x0 must be 0")
+        }
+        Err(e) => {
+            testing.expect(false, "unexpected trap: ${e}")
+        }
+    }
+}
+
+@Test
+func arithmetic_shifts_and_signed_comparisons(): void {
+    let mut mem = memory.newMemory(1024)
+    let mut hart = cpu.newCpu(0, 1024)
+    let mut prog = vec.Vec.new<u32>()
+    // x1 = -16 (0xFFFFFFF0)
+    prog.push(decoder.encodeI(0xFF0, 0, 0x0, 1, 0x13))
+    // x2 = SRAI x1, 2 -> should be -4 (0xFFFFFFFC) (shamt=2, funct7=0x20 -> imm12 = 0x402)
+    prog.push(decoder.encodeI(0x402, 1, 0x5, 2, 0x13))
+    // x3 = SRLI x1, 2 -> should be 0x3FFFFFFC (logical shift)
+    prog.push(decoder.encodeI(0x002, 1, 0x5, 3, 0x13))
+    // x4 = SLTI x1, 0 -> signed(-16) < 0 is 1
+    prog.push(decoder.encodeI(0, 1, 0x2, 4, 0x13))
+    // x5 = SLTIU x1, 10 -> unsigned(0xFFFFFFF0) < 10 is 0
+    prog.push(decoder.encodeI(10, 1, 0x3, 5, 0x13))
+    prog.push(0x00000073)
+
+    mem.loadProgramWords(0, prog.asSlice())
+    match hart.run(mut ref mem, 100) {
+        Ok(_) => {
+            testing.expect(hart.readReg(2) == 0xFFFFFFFC, "SRAI -16 >> 2 must be -4 (0xFFFFFFFC)")
+            testing.expect(hart.readReg(3) == 0x3FFFFFFC, "SRLI -16 >> 2 must be 0x3FFFFFFC")
+            testing.expect(hart.readReg(4) == 1, "SLTI(-16 < 0) must be 1")
+            testing.expect(hart.readReg(5) == 0, "SLTIU(0xFFFFFFF0 < 10) must be 0")
+        }
+        Err(e) => {
+            testing.expect(false, "unexpected trap: ${e}")
+        }
+    }
+}
+
+@Test
+func memory_narrow_sign_and_zero_extension(): void {
+    let mut mem = memory.newMemory(1024)
+    let mut hart = cpu.newCpu(0, 1024)
+    let mut prog = vec.Vec.new<u32>()
+    // x1 = 0x200 (base address)
+    prog.push(decoder.encodeI(0x200, 0, 0x0, 1, 0x13))
+    // x2 = -128 (0xFF80)
+    prog.push(decoder.encodeI(0xF80, 0, 0x0, 2, 0x13))
+    // SB x2, 0(x1) -> stores 0x80 at 0x200
+    prog.push(decoder.encodeS(0, 2, 1, 0x0, 0x23))
+    // LB x3, 0(x1) -> sign-extended 0x80 -> 0xFFFFFF80
+    prog.push(decoder.encodeI(0, 1, 0x0, 3, 0x03))
+    // LBU x4, 0(x1) -> zero-extended 0x80 -> 0x00000080
+    prog.push(decoder.encodeI(0, 1, 0x4, 4, 0x03))
+    prog.push(0x00000073)
+
+    mem.loadProgramWords(0, prog.asSlice())
+    match hart.run(mut ref mem, 100) {
+        Ok(_) => {
+            testing.expect(hart.readReg(3) == 0xFFFFFF80, "LB sign extension of 0x80 failed")
+            testing.expect(hart.readReg(4) == 0x00000080, "LBU zero extension of 0x80 failed")
+        }
+        Err(e) => {
+            testing.expect(false, "unexpected trap: ${e}")
+        }
+    }
+}
+
+@Test
+func fibonacci_10_and_20_execution(): void {
+    let mut mem = memory.newMemory(4096)
+    let mut hart = cpu.newCpu(0, 4096)
+
+    // Inline Fib(10) = 55
+    let mut prog = vec.Vec.new<u32>()
+    prog.push(decoder.encodeI(10, 0, 0x0, 11, 0x13))
+    prog.push(decoder.encodeI(0, 0, 0x0, 12, 0x13))
+    prog.push(decoder.encodeI(1, 0, 0x0, 13, 0x13))
+    prog.push(decoder.encodeI(0x400, 0, 0x0, 15, 0x13))
+    prog.push(decoder.encodeB(32, 0, 11, 0x0, 0x63))
+    prog.push(decoder.encodeR(0x00, 13, 12, 0x0, 14, 0x33))
+    prog.push(decoder.encodeS(0, 14, 15, 0x2, 0x23))
+    prog.push(decoder.encodeI(4, 15, 0x0, 15, 0x13))
+    prog.push(decoder.encodeI(0, 13, 0x0, 12, 0x13))
+    prog.push(decoder.encodeI(0, 14, 0x0, 13, 0x13))
+    prog.push(decoder.encodeI(0xFFF, 11, 0x0, 11, 0x13))
+    prog.push(decoder.encodeJ(0xFFFFFFE4, 0, 0x6F))
+    prog.push(decoder.encodeI(0, 12, 0x0, 10, 0x13))
+    prog.push(0x00000073)
+
+    mem.loadProgramWords(0, prog.asSlice())
+    match hart.run(mut ref mem, 10000) {
+        Ok(_) => {
+            testing.expect(hart.readReg(10) == 55, "fib(10) in a0 must be 55")
+            match mem.readU32(0x400 + 36) {
+                Ok(fib11) => {
+                    testing.expect(fib11 == 89, "10th stored word in RAM must be fib(11)=89")
+                }
+                Err(_) => {
+                    testing.expect(false, "failed reading RAM at 0x424")
+                }
+            }
+        }
+        Err(e) => {
+            testing.expect(false, "fib(10) trapped: ${e}")
+        }
+    }
+}

@@ -1,0 +1,66 @@
+module katu
+
+import io
+import std.env as env
+import std.core.str as strings
+
+import self.searcher as searcher
+import self.walker as walker
+
+@Effects(FileRead, Foreign)
+func main(): int {
+    let argc = env.argsLen()
+    if argc < 3 {
+        io.println("katu — fast byte pattern searcher")
+        io.println("")
+        io.println("Usage: katu [flags] <pattern> <path>")
+        io.println("")
+        io.println("Flags:")
+        io.println("  --count             Print only match count per file")
+        io.println("  -l, --files-with-matches   Print only filenames")
+        io.println("  -i, --ignore-case   Case-insensitive ASCII search")
+        return 1
+    }
+
+    let mut search_opts = searcher.defaultOpts()
+    let mut walk_opts = walker.defaultWalkOpts()
+    let mut pattern = ""
+    let mut path = ""
+    let mut positional: uint = 0
+
+    let mut i: int = 1
+    while i < argc {
+        let a = env.arg(i)
+        if a == "--count" {
+            walk_opts.count_only = true
+        } else if a == "--files-with-matches" || a == "-l" {
+            walk_opts.files_with_matches = true
+        } else if a == "--ignore-case" || a == "-i" {
+            search_opts.ignore_case = true
+        } else {
+            if positional == 0 {
+                pattern = a
+                positional = 1
+            } else {
+                path = a
+                positional = 2
+            }
+        }
+        i = i + 1
+    }
+
+    if positional < 2 {
+        io.println("katu: error: need both <pattern> and <path>")
+        return 1
+    }
+
+    // Convert pattern str to []u8 without allocation — borrow the backing bytes.
+    let needle = strings.asBytes(pattern)
+
+    let total = walker.searchDir(path, needle, ref search_opts, ref walk_opts, true)
+
+    if walk_opts.count_only {
+        io.println("total: ${total}")
+    }
+    return 0
+}

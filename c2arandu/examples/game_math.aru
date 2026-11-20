@@ -1,0 +1,35 @@
+//! Arquivo gerado automaticamente pelo c2arandu
+//! Baseado na arquitetura Dual-Locus & OSSA da linguagem Arandu.
+
+// --- Typedefs e Aliases C ---
+
+// --- Enums C ---
+public enum GameState {
+    STATE_MENU,
+    STATE_PLAYING,
+    STATE_PAUSED,
+    STATE_GAMEOVER,
+}
+
+// --- Estruturas C (@Repr("C")) ---
+@Repr("C")
+public struct Vec2 {
+    public x: f32,
+    public y: f32,
+}
+
+@Repr("C")
+public struct Player {
+    public id: int,
+    public health: u32,
+    public position: Vec2,
+    public next: ptr[Player],
+}
+
+// --- Assinaturas de Funções Externas C ---
+extern "C" {
+    func spawn_player(p: ptr[Player], x: f32, y: f32): void
+    func distance(a: ptr[Vec2], b: ptr[Vec2]): f32
+    func is_alive(p: ptr[Player]): bool
+}
+

@@ -1,0 +1,125 @@
+module katu_tests
+
+import std.testing as testing
+import std.alloc.vec as vec
+import std.core.str as strings
+
+import self.searcher as searcher
+
+/// Helper: convert a str literal to a []u8 slice without allocation.
+func toBytes(s: ref str): []u8 {
+    return strings.asBytes(s)
+}
+
+@Test
+func exact_match_found_at_start(): void {
+    let haystack = toBytes("hello world\n")
+    let needle = toBytes("hello")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 1, "expected 1 match")
+    let s = matches.asSlice()
+    let m = ref s[0]
+    testing.expect(m.line == 1, "expected line 1")
+    testing.expect(m.offset == 0, "expected offset 0")
+}
+
+@Test
+func exact_match_found_in_middle(): void {
+    let haystack = toBytes("foo bar baz\nqux bar quux\n")
+    let needle = toBytes("bar")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 2, "expected 2 matches (one per line)")
+    let s = matches.asSlice()
+    let m0 = ref s[0]
+    let m1 = ref s[1]
+    testing.expect(m0.line == 1, "first match on line 1")
+    testing.expect(m1.line == 2, "second match on line 2")
+}
+
+@Test
+func no_match_returns_empty(): void {
+    let haystack = toBytes("nothing to see here\n")
+    let needle = toBytes("xyz")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 0, "expected 0 matches")
+}
+
+@Test
+func ignore_case_matches(): void {
+    let haystack = toBytes("Hello World\nHELLO WORLD\nhello world\n")
+    let needle = toBytes("hello")
+    let opts = searcher.SearchOpts { ignore_case: true }
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 3, "expected 3 case-insensitive matches")
+}
+
+@Test
+func ignore_case_does_not_match_when_disabled(): void {
+    let haystack = toBytes("HELLO\nHello\n")
+    let needle = toBytes("hello")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 0, "case-sensitive: expected 0 matches for uppercase")
+}
+
+@Test
+func line_numbers_are_counted_correctly(): void {
+    let haystack = toBytes("aaa\nbbb\nccc\nddd\n")
+    let needle = toBytes("ccc")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 1, "expected 1 match")
+    let s = matches.asSlice()
+    let m = ref s[0]
+    testing.expect(m.line == 3, "expected match on line 3")
+}
+
+@Test
+func empty_needle_returns_empty(): void {
+    let haystack = toBytes("anything")
+    let needle = toBytes("")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 0, "empty needle returns no matches")
+}
+
+@Test
+func needle_longer_than_haystack_returns_empty(): void {
+    let haystack = toBytes("hi")
+    let needle = toBytes("hello world")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 0, "needle longer than haystack: no match")
+}
+
+@Test
+func simd_fast_skip_across_multiple_16_byte_chunks(): void {
+    let haystack = toBytes("0123456789abcdef0123456789abcdef0123456789abcdef_needle_here_and_more_padding_0123456789abcdef\nsecond_line_0123456789abcdef0123456789abcdef_needle_two\n")
+    let needle = toBytes("needle")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 2, "expected 2 matches across >64B buffer")
+    let s = matches.asSlice()
+    let m0 = ref s[0]
+    let m1 = ref s[1]
+    testing.expect(m0.line == 1, "first match on line 1")
+    testing.expect(m0.offset == 49, "first match at offset 49")
+    testing.expect(m1.line == 2, "second match on line 2")
+}
+
+@Test
+func simd_boundary_spanning_match_at_offset_14(): void {
+    let haystack = toBytes("0123456789abcdTARGET_0123456789abcdef\n")
+    let needle = toBytes("TARGET")
+    let opts = searcher.defaultOpts()
+    let mut matches = searcher.findMatches(haystack, needle, ref opts)
+    testing.expect(matches.len() == 1, "expected match crossing 16-byte boundary")
+    let s = matches.asSlice()
+    let m0 = ref s[0]
+    testing.expect(m0.offset == 14, "expected offset 14")
+    testing.expect(m0.line_start == 0, "expected line_start 0")
+    testing.expect(m0.line_end == 37, "expected line_end 37")
+}

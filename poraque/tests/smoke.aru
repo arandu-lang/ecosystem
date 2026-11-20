@@ -1,0 +1,105 @@
+module poraque_tests
+
+import std.testing as testing
+import std.core.slice as slice
+import std.core.str as strings
+import std.alloc.vec as vec
+
+import self.hexdump as hexdump
+import self.elf as elf
+
+
+@Test
+func format_hex_byte_values(): void {
+    let p0 = hexdump.formatHexByte(0x00)
+    testing.expect(p0[0] == b'0' && p0[1] == b'0', "0x00 -> 00")
+
+    let pff = hexdump.formatHexByte(0xff)
+    testing.expect(pff[0] == b'f' && pff[1] == b'f', "0xff -> ff")
+
+    let p42 = hexdump.formatHexByte(0x42)
+    testing.expect(p42[0] == b'4' && p42[1] == b'2', "0x42 -> 42")
+}
+
+@Test
+func is_printable_detection(): void {
+    testing.expect(hexdump.isPrintable(b'A'), "'A' is printable")
+    testing.expect(hexdump.isPrintable(b' '), "space is printable")
+    testing.expect(hexdump.isPrintable(b'~'), "'~' is printable")
+    testing.expect(!hexdump.isPrintable(0), "0x00 is not printable")
+    testing.expect(!hexdump.isPrintable(10), "LF is not printable")
+    testing.expect(!hexdump.isPrintable(0x7f), "DEL is not printable")
+}
+
+@Test
+func read_u32_and_u64_le(): void {
+    // A fixed array cannot be sliced into a `[]u8` at runtime yet, so the
+    // input slice is built through a `Vec<u8>`.
+    let mut raw = vec.Vec.new<u8>()
+    raw.push(0x78)
+    raw.push(0x56)
+    raw.push(0x34)
+    raw.push(0x12)
+    raw.push(0x00)
+    raw.push(0x00)
+    raw.push(0x00)
+    raw.push(0x00)
+    let s = raw.asSlice()
+
+    let val32 = elf.readU32Le(s, 0)
+    testing.expect(val32 == 0x12345678, "readU32Le mismatch")
+
+    let val64 = elf.readU64Le(s, 0)
+    testing.expect(val64 == 0x12345678, "readU64Le mismatch")
+}
+
+@Test
+func parse_ehdr_rejects_non_elf(): void {
+    let mut not_elf = vec.Vec.new<u8>()
+    let mut i: usize = 0
+    while i < 64 {
+        not_elf.push(0)
+        i = i + 1
+    }
+    let s = not_elf.asSlice()
+
+    match elf.parseEhdr(s) {
+        Ok(_) => {
+            testing.expect(false, "should have rejected non-ELF buffer")
+        }
+        Err(_) => {
+            testing.expect(true, "correctly rejected non-ELF buffer")
+        }
+    }
+}
+
+@Test
+func string_table_get_string(): void {
+    let mut strtab = vec.Vec.new<u8>()
+    strtab.push(0)
+    strtab.push(b'm')
+    strtab.push(b'a')
+    strtab.push(b'i')
+    strtab.push(b'n')
+    strtab.push(0)
+    strtab.push(b't')
+    strtab.push(b'e')
+    strtab.push(b'x')
+    strtab.push(b't')
+    strtab.push(0)
+    strtab.push(0)
+    strtab.push(0)
+    strtab.push(0)
+    strtab.push(0)
+    strtab.push(0)
+    let s = strtab.asSlice()
+
+    let str1 = elf.getString(s, 1)
+    testing.expect(str1.asStr() == "main", "expected 'main'")
+
+    let str2 = elf.getString(s, 6)
+    testing.expect(str2.asStr() == "text", "expected 'text'")
+
+    let empty = elf.getString(s, 0)
+    testing.expect(empty.asStr() == "", "offset 0 should be empty string")
+}

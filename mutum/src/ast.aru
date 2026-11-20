@@ -1,0 +1,59 @@
+module ast
+
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+
+/// The syntactic kind of a template node.
+public enum NodeKind {
+    Literal,
+    Variable,
+    IfBlock,
+    ForLoop,
+}
+
+/// A node in the template AST arena.
+public struct Node {
+    public kind: NodeKind
+    /// For Literal: byte offset range into the original source buffer.
+    public textStart: usize
+    public textLen: usize
+    /// For Variable: variable name or dot-path.
+    public varName: ownedStrings.String
+    /// Optional filter applied to this variable ("upper", "lower", "trim", "raw").
+    public filterName: ownedStrings.String
+    /// Whether auto-escaping is disabled for this variable (`| raw`).
+    public isRaw: bool
+    /// Optional default fallback if the variable is null or empty.
+    public defaultVal: ownedStrings.String
+    /// For IfBlock: whether condition is inverted (`{% if !var %}`).
+    public isNegated: bool
+    /// Range in `childIndices` for the 'then' block.
+    public thenStart: usize
+    public thenCount: usize
+    /// Range in `childIndices` for the 'else' block.
+    public elseStart: usize
+    public elseCount: usize
+    /// For ForLoop: the local iteration variable name (e.g. "item").
+    public iterVar: ownedStrings.String
+    /// The collection variable name (e.g. "items").
+    public collectionVar: ownedStrings.String
+    /// Range in `childIndices` for the loop body.
+    public bodyStart: usize
+    public bodyCount: usize
+}
+
+/// The flat arena containing all nodes of a compiled template.
+public struct TemplateAst {
+    public nodes: vec.Vec<Node>
+    public childIndices: vec.Vec<usize>
+    public rootIndices: vec.Vec<usize>
+}
+
+/// Creates a new empty Template AST arena.
+public func newTemplateAst(): TemplateAst {
+    return TemplateAst {
+        nodes: vec.Vec.new<Node>(),
+        childIndices: vec.Vec.new<usize>(),
+        rootIndices: vec.Vec.new<usize>(),
+    }
+}

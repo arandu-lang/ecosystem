@@ -1,0 +1,149 @@
+module math
+
+import std.core.simd as simd
+
+/// A 3-component single-precision float vector.
+///
+/// Methods take `self: Vec3` BY VALUE (not ref) to test whether the compiler
+/// passes the 3 floats in xmm0/xmm1/xmm2 registers or copies them to the stack.
+/// Any `movaps [rsp+N], xmm0` inside a hot Vec3 operation is a spill.
+public struct Vec3 {
+    public x: f32
+    public y: f32
+    public z: f32
+}
+
+public func vec3(x: f32, y: f32, z: f32): Vec3 {
+    return Vec3 { x: x, y: y, z: z }
+}
+
+/// Converts a `Vec3` into a 128-bit SIMD `F32x4` register with lane 3 set to `0.0`.
+public func Vec3.toSimd4(self: Vec3): simd.F32x4 {
+    return simd.F32x4.new(self.x, self.y, self.z, 0.0)
+}
+
+/// Converts a 128-bit SIMD `F32x4` register back to a `Vec3` using lanes 0..2.
+public func Vec3.fromSimd4(v: simd.F32x4): Vec3 {
+    return Vec3 {
+        x: v.extractLane(0),
+        y: v.extractLane(1),
+        z: v.extractLane(2),
+    }
+}
+
+/// Computes the 3D dot product using 128-bit SIMD `F32x4.dot` (4th lane is 0.0).
+public func Vec3.dotSimd(self: Vec3, other: Vec3): f32 {
+    return self.toSimd4().dot(other.toSimd4())
+}
+
+/// Adds two `Vec3` values using 128-bit SIMD `F32x4.add`.
+public func Vec3.addSimd(self: Vec3, other: Vec3): Vec3 {
+    return Vec3.fromSimd4(self.toSimd4().add(other.toSimd4()))
+}
+
+/// Scales a `Vec3` by scalar `t` using `F32x4.splat(t)` and `F32x4.mul`.
+public func Vec3.scaleSimd(self: Vec3, t: f32): Vec3 {
+    return Vec3.fromSimd4(self.toSimd4().mul(simd.F32x4.splat(t)))
+}
+
+public func Vec3.add(self: Vec3, other: Vec3): Vec3 {
+    return Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+}
+
+public func Vec3.sub(self: Vec3, other: Vec3): Vec3 {
+    return Vec3 { x: self.x - other.x, y: self.y - other.y, z: self.z - other.z }
+}
+
+public func Vec3.scale(self: Vec3, t: f32): Vec3 {
+    return Vec3 { x: self.x * t, y: self.y * t, z: self.z * t }
+}
+
+public func Vec3.neg(self: Vec3): Vec3 {
+    return Vec3 { x: -self.x, y: -self.y, z: -self.z }
+}
+
+public func Vec3.dot(self: Vec3, other: Vec3): f32 {
+    return self.x * other.x + self.y * other.y + self.z * other.z
+}
+
+public func Vec3.lengthSq(self: Vec3): f32 {
+    return self.dot(self)
+}
+
+public func Vec3.length(self: Vec3): f32 {
+    return sqrt(self.lengthSq())
+}
+
+public func Vec3.normalize(self: Vec3): Vec3 {
+    let len = self.length()
+    if len < 0.000001 {
+        return Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    }
+    let inv = 1.0 / len
+    return self.scale(inv)
+}
+
+public func Vec3.reflect(self: Vec3, normal: Vec3): Vec3 {
+    // r = v - 2*(v·n)*n
+    let d = self.dot(normal) * 2.0
+    return self.sub(normal.scale(d))
+}
+
+public func Vec3.mulComp(self: Vec3, other: Vec3): Vec3 {
+    return Vec3 { x: self.x * other.x, y: self.y * other.y, z: self.z * other.z }
+}
+
+public func Vec3.clamp01(self: Vec3): Vec3 {
+    return Vec3 {
+        x: clamp(self.x, 0.0, 1.0),
+        y: clamp(self.y, 0.0, 1.0),
+        z: clamp(self.z, 0.0, 1.0),
+    }
+}
+
+/// Clamp x to [lo, hi].
+public func clamp(x: f32, lo: f32, hi: f32): f32 {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+/// Square root via Newton-Raphson.
+///
+/// The standard library exposes no square root yet, so this module provides
+/// its own: normalize into [0.25, 4.0], converge, then scale back by 2^shift.
+public func sqrt(x: f32): f32 {
+    if x <= 0.0 {
+        return 0.0
+    }
+    let mut scaled = x
+    let mut shift: int = 0
+    while scaled > 4.0 {
+        scaled = scaled / 4.0
+        shift = shift + 1
+    }
+    while scaled < 0.25 {
+        scaled = scaled * 4.0
+        shift = shift - 1
+    }
+    let mut guess = scaled * 0.5 + 0.5
+    let mut i: int = 0
+    while i < 10 {
+        guess = 0.5 * (guess + scaled / guess)
+        i = i + 1
+    }
+    let mut result = guess
+    let mut k: int = 0
+    if shift > 0 {
+        while k < shift {
+            result = result * 2.0
+            k = k + 1
+        }
+    } else {
+        while k < -shift {
+            result = result / 2.0
+            k = k + 1
+        }
+    }
+    return result
+}

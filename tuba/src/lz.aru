@@ -1,0 +1,389 @@
+module lz
+
+import std.core.slice as slice
+import std.alloc.vec as vec
+
+// ─── Hash table for match finding ────────────────────────────────────────────
+// 4096-slot table mapping 4-byte sequences to their last position offset.
+// Stored as u16 because the block size is at most 64KB.
+// This is the primary register-spilling target: if Cranelift runs out of
+// registers it will start saving/restoring these slots through the stack.
+
+/// LZ compression state. Holds the 4096-entry hash table.
+/// Instantiate on the stack with `newState()`.
+public struct CompressState {
+    public t0:   u16  public t1:   u16  public t2:   u16  public t3:   u16
+    public t4:   u16  public t5:   u16  public t6:   u16  public t7:   u16
+    public t8:   u16  public t9:   u16  public t10:  u16  public t11:  u16
+    public t12:  u16  public t13:  u16  public t14:  u16  public t15:  u16
+    public t16:  u16  public t17:  u16  public t18:  u16  public t19:  u16
+    public t20:  u16  public t21:  u16  public t22:  u16  public t23:  u16
+    public t24:  u16  public t25:  u16  public t26:  u16  public t27:  u16
+    public t28:  u16  public t29:  u16  public t30:  u16  public t31:  u16
+    // Additional pages (32..4095) stored in a Vec to keep the struct from
+    // being gigantic. The first 32 entries cover the most-recently-used
+    // slots that benefit most from register or cache locality.
+    public extra: vec.Vec<u16>
+}
+
+/// Create a zero-initialized CompressState.
+@Effects(Foreign)
+public func newState(): CompressState {
+    let mut extra = vec.Vec.new<u16>()
+    // extra holds slots 32..4095, i.e., 4064 entries.
+    let mut i: usize = 0
+    while i < 4064 {
+        extra.push(0)
+        i = i + 1
+    }
+    return CompressState {
+        t0:  0,
+        t1:  0,
+        t2:  0,
+        t3:  0,
+        t4:  0,
+        t5:  0,
+        t6:  0,
+        t7:  0,
+        t8:  0,
+        t9:  0,
+        t10: 0,
+        t11: 0,
+        t12: 0,
+        t13: 0,
+        t14: 0,
+        t15: 0,
+        t16: 0,
+        t17: 0,
+        t18: 0,
+        t19: 0,
+        t20: 0,
+        t21: 0,
+        t22: 0,
+        t23: 0,
+        t24: 0,
+        t25: 0,
+        t26: 0,
+        t27: 0,
+        t28: 0,
+        t29: 0,
+        t30: 0,
+        t31: 0,
+        extra: extra,
+    }
+}
+
+public func CompressState.destroy(self: mut ref CompressState): void {
+}
+
+func stateGet(state: ref CompressState, slot: uint): u16 {
+    if slot == 0  { return state.t0  }
+    if slot == 1  { return state.t1  }
+    if slot == 2  { return state.t2  }
+    if slot == 3  { return state.t3  }
+    if slot == 4  { return state.t4  }
+    if slot == 5  { return state.t5  }
+    if slot == 6  { return state.t6  }
+    if slot == 7  { return state.t7  }
+    if slot == 8  { return state.t8  }
+    if slot == 9  { return state.t9  }
+    if slot == 10 { return state.t10 }
+    if slot == 11 { return state.t11 }
+    if slot == 12 { return state.t12 }
+    if slot == 13 { return state.t13 }
+    if slot == 14 { return state.t14 }
+    if slot == 15 { return state.t15 }
+    if slot == 16 { return state.t16 }
+    if slot == 17 { return state.t17 }
+    if slot == 18 { return state.t18 }
+    if slot == 19 { return state.t19 }
+    if slot == 20 { return state.t20 }
+    if slot == 21 { return state.t21 }
+    if slot == 22 { return state.t22 }
+    if slot == 23 { return state.t23 }
+    if slot == 24 { return state.t24 }
+    if slot == 25 { return state.t25 }
+    if slot == 26 { return state.t26 }
+    if slot == 27 { return state.t27 }
+    if slot == 28 { return state.t28 }
+    if slot == 29 { return state.t29 }
+    if slot == 30 { return state.t30 }
+    if slot == 31 { return state.t31 }
+    let mut got: u16 = 0
+    match state.extra.getCopy(slot as usize - 32) {
+        Some(v) => {
+            got = v
+        }
+        None => {}
+    }
+    return got
+}
+
+func stateSet(state: mut ref CompressState, slot: uint, val: u16): void {
+    if slot == 0  { state.t0  = val  return }
+    if slot == 1  { state.t1  = val  return }
+    if slot == 2  { state.t2  = val  return }
+    if slot == 3  { state.t3  = val  return }
+    if slot == 4  { state.t4  = val  return }
+    if slot == 5  { state.t5  = val  return }
+    if slot == 6  { state.t6  = val  return }
+    if slot == 7  { state.t7  = val  return }
+    if slot == 8  { state.t8  = val  return }
+    if slot == 9  { state.t9  = val  return }
+    if slot == 10 { state.t10 = val  return }
+    if slot == 11 { state.t11 = val  return }
+    if slot == 12 { state.t12 = val  return }
+    if slot == 13 { state.t13 = val  return }
+    if slot == 14 { state.t14 = val  return }
+    if slot == 15 { state.t15 = val  return }
+    if slot == 16 { state.t16 = val  return }
+    if slot == 17 { state.t17 = val  return }
+    if slot == 18 { state.t18 = val  return }
+    if slot == 19 { state.t19 = val  return }
+    if slot == 20 { state.t20 = val  return }
+    if slot == 21 { state.t21 = val  return }
+    if slot == 22 { state.t22 = val  return }
+    if slot == 23 { state.t23 = val  return }
+    if slot == 24 { state.t24 = val  return }
+    if slot == 25 { state.t25 = val  return }
+    if slot == 26 { state.t26 = val  return }
+    if slot == 27 { state.t27 = val  return }
+    if slot == 28 { state.t28 = val  return }
+    if slot == 29 { state.t29 = val  return }
+    if slot == 30 { state.t30 = val  return }
+    if slot == 31 { state.t31 = val  return }
+    state.extra.set(slot as usize - 32, val)
+    return
+}
+
+/// Hash 4 bytes into a 12-bit slot index [0, 4096).
+func hash4(b0: u8, b1: u8, b2: u8, b3: u8): uint {
+    let a = b0 as uint
+    let b = b1 as uint
+    let c = b2 as uint
+    let d = b3 as uint
+    return ((a << 8) ^ b ^ (c << 4) ^ d) & 4095
+}
+
+/// Reset all hash table entries to 0 (re-use state across blocks).
+public func CompressState.reset(self: mut ref CompressState): void {
+    self.t0  = 0  self.t1  = 0  self.t2  = 0  self.t3  = 0
+    self.t4  = 0  self.t5  = 0  self.t6  = 0  self.t7  = 0
+    self.t8  = 0  self.t9  = 0  self.t10 = 0  self.t11 = 0
+    self.t12 = 0  self.t13 = 0  self.t14 = 0  self.t15 = 0
+    self.t16 = 0  self.t17 = 0  self.t18 = 0  self.t19 = 0
+    self.t20 = 0  self.t21 = 0  self.t22 = 0  self.t23 = 0
+    self.t24 = 0  self.t25 = 0  self.t26 = 0  self.t27 = 0
+    self.t28 = 0  self.t29 = 0  self.t30 = 0  self.t31 = 0
+    let n = self.extra.len()
+    let mut i: usize = 0
+    while i < n {
+        self.extra.set(i, 0)
+        i = i + 1
+    }
+}
+
+/// Emit a token: high nibble = literal count (clamped), low nibble = match len - 4.
+/// If literal count >= 15 or match len - 4 >= 15, emit extra length bytes.
+func emitToken(
+    out: mut ref vec.Vec<u8>,
+    input: []u8,
+    lit_start: usize,
+    lit_len: usize,
+    match_len: usize,
+    offset: u16
+): void {
+    let lit_nibble: u8 = if lit_len >= 15 { 15 as u8 } else { lit_len as u8 }
+    let ml: usize = if match_len > 4 { match_len - 4 } else { 0 }
+    let ml_nibble: u8 = if ml >= 15 { 15 as u8 } else { ml as u8 }
+
+    out.push((lit_nibble << 4) | ml_nibble)
+
+    // Extra literal length bytes.
+    if lit_len >= 15 {
+        let mut remaining = lit_len - 15
+        while remaining >= 255 {
+            out.push(255)
+            remaining = remaining - 255
+        }
+        out.push(remaining as u8)
+    }
+
+    // Emit literal bytes.
+    let mut i: usize = lit_start
+    let end = lit_start + lit_len
+    while i < end {
+        out.push(input[i])
+        i = i + 1
+    }
+
+    // Emit the 2-byte little-endian match offset, then the extra match length
+    // bytes: LZ4 sequence order is token, literals, offset, match length.
+    out.push((offset & 0xff) as u8)
+    out.push((offset >> 8) as u8)
+
+    // Extra match length bytes.
+    if ml >= 15 {
+        let mut remaining = ml - 15
+        while remaining >= 255 {
+            out.push(255)
+            remaining = remaining - 255
+        }
+        out.push(remaining as u8)
+    }
+}
+
+/// Compress `input` into `output`. Returns the number of bytes written.
+/// Uses LZ4-like token format with 4-byte hash matching.
+@Effects(Foreign)
+public func compress(input: []u8, state: mut ref CompressState, out: mut ref vec.Vec<u8>): void {
+    state.reset()
+    let n = slice.len<u8>(input)
+    if n == 0 { return }
+
+    let mut i: usize = 0
+    let mut lit_start: usize = 0
+
+    // Main compression loop. Need at least 4 bytes to hash.
+    while i + 4 <= n {
+        let b0 = input[i]
+        let b1 = input[i + 1]
+        let b2 = input[i + 2]
+        let b3 = input[i + 3]
+        let slot = hash4(b0, b1, b2, b3)
+        let prev_pos = stateGet(ref *state, slot) as usize
+
+        // Update hash table.
+        stateSet(state, slot, i as u16)
+
+        // Check if there is a match at prev_pos.
+        let mut match_len: usize = 0
+        if prev_pos < i && i - prev_pos <= 65535 {
+            // Verify the 4-byte prefix matches.
+            if prev_pos + 3 < n
+            && input[prev_pos]     == b0
+            && input[prev_pos + 1] == b1
+            && input[prev_pos + 2] == b2
+            && input[prev_pos + 3] == b3 {
+                match_len = 4
+                // Extend the match.
+                let mut mi = prev_pos + 4
+                let mut ci = i + 4
+                while ci < n && mi < n && input[mi] == input[ci] {
+                    match_len = match_len + 1
+                    mi = mi + 1
+                    ci = ci + 1
+                }
+            }
+        }
+
+        if match_len >= 4 {
+            // Emit literal run then match reference.
+            let lit_len = i - lit_start
+            let offset = (i - prev_pos) as u16
+            emitToken(out, input, lit_start, lit_len, match_len, offset)
+
+            i = i + match_len
+            lit_start = i
+        } else {
+            i = i + 1
+        }
+    }
+
+    // Flush remaining literals as a final token (match_len = 0 sentinel).
+    let lit_len = n - lit_start
+    if lit_len > 0 {
+        let lit_nibble: u8 = if lit_len >= 15 { 15 as u8 } else { lit_len as u8 }
+        out.push(lit_nibble << 4)
+        if lit_len >= 15 {
+            let mut remaining = lit_len - 15
+            while remaining >= 255 { out.push(255)  remaining = remaining - 255 }
+            out.push(remaining as u8)
+        }
+        let mut li = lit_start
+        while li < n {
+            out.push(input[li])
+            li = li + 1
+        }
+    }
+}
+
+/// Decompress LZ-compressed bytes into `out`. Returns Ok(bytes_written) or Err.
+public func decompress(input: []u8, out: mut ref vec.Vec<u8>): Result<usize, str> {
+    let n = slice.len<u8>(input)
+    let mut i: usize = 0
+    let start_len = out.len()
+
+    while i < n {
+        let token = input[i]
+        i = i + 1
+
+        let mut lit_len = (token >> 4) as usize
+        let mut ml_extra = (token & 0x0f) as usize
+
+        // Read extra literal length bytes.
+        if lit_len == 15 {
+            while i < n {
+                let extra = input[i] as usize
+                i = i + 1
+                lit_len = lit_len + extra
+                if extra != 255 { break }
+            }
+        }
+
+        // Copy literal bytes.
+        if i + lit_len > n {
+            return Result.Err("decompress: truncated literals")
+        }
+        let mut li: usize = 0
+        while li < lit_len {
+            out.push(input[i + li])
+            li = li + 1
+        }
+        i = i + lit_len
+
+        // End of stream: last sequence has no match.
+        if i >= n { break }
+
+        // Read 2-byte little-endian offset.
+        if i + 2 > n {
+            return Result.Err("decompress: truncated match offset")
+        }
+        let offset_lo = input[i] as usize
+        let offset_hi = input[i + 1] as usize
+        let offset = offset_lo | (offset_hi << 8)
+        i = i + 2
+
+        // Read extra match length bytes.
+        let mut match_len = ml_extra + 4
+        if ml_extra == 15 {
+            while i < n {
+                let extra = input[i] as usize
+                i = i + 1
+                match_len = match_len + extra
+                if extra != 255 { break }
+            }
+        }
+
+        // Copy match from output buffer (may overlap with current output).
+        let cur_len = out.len()
+        if offset == 0 || offset > cur_len {
+            return Result.Err("decompress: invalid match offset")
+        }
+        let match_start = cur_len - offset
+        let mut mi: usize = 0
+        while mi < match_len {
+            // Re-read from out since it may grow (overlapping copy = RLE).
+            let mut b: u8 = 0
+            match out.getCopy(match_start + mi) {
+                Some(x) => {
+                    b = x
+                }
+                None => {}
+            }
+            out.push(b)
+            mi = mi + 1
+        }
+    }
+    return Result.Ok(out.len() - start_len)
+}

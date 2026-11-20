@@ -1,0 +1,75 @@
+//! Arquivo gerado automaticamente pelo c2arandu
+//! Baseado na arquitetura Dual-Locus & OSSA da linguagem Arandu.
+
+// --- Tipos de Sistema C C-ABI ---
+@Repr("C")
+public struct FILE {}
+
+// --- Typedefs e Aliases C ---
+public type StbiUc = u8
+public type StbiUs = u16
+
+// --- Enums e Constantes C ---
+public const STBI_default = 0
+public const STBI_grey = 1
+public const STBI_grey_alpha = 2
+public const STBI_rgb = 3
+public const STBI_rgb_alpha = 4
+
+// --- Estruturas C (@Repr("C")) ---
+@Repr("C")
+public struct StbiIoCallbacks {
+    public read: ptr[func(ptr[u8], ptr[i8], int) int],
+    public skip: ptr[func(ptr[u8], int)],
+    public eof: ptr[func(ptr[u8]) int],
+}
+
+// --- Assinaturas de Funções Externas C ---
+extern "C" {
+    func malloc(size: usize): ptr[u8]
+    func free(ptr_val: ptr[u8])
+    func stbiLoadFromMemory(buffer: ptr[StbiUc], len: int, x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUc]
+    func stbiLoadFromCallbacks(clbk: ptr[StbiIoCallbacks], user: ptr[u8], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUc]
+    func stbiLoad(filename: ptr[i8], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUc]
+    func stbiLoadFromFile(f: ptr[FILE], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUc]
+    func stbiLoadGifFromMemory(buffer: ptr[StbiUc], len: int, delays: ptr[ptr[int]], x: ptr[int], y: ptr[int], z: ptr[int], comp: ptr[int], reqComp: int): ptr[StbiUc]
+    func stbiLoad16FromMemory(buffer: ptr[StbiUc], len: int, x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUs]
+    func stbiLoad16FromCallbacks(clbk: ptr[StbiIoCallbacks], user: ptr[u8], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUs]
+    func stbiLoad16(filename: ptr[i8], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUs]
+    func stbiLoadFromFile16(f: ptr[FILE], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[StbiUs]
+    func stbiLoadfFromMemory(buffer: ptr[StbiUc], len: int, x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[f32]
+    func stbiLoadfFromCallbacks(clbk: ptr[StbiIoCallbacks], user: ptr[u8], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[f32]
+    func stbiLoadf(filename: ptr[i8], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[f32]
+    func stbiLoadfFromFile(f: ptr[FILE], x: ptr[int], y: ptr[int], channelsInFile: ptr[int], desiredChannels: int): ptr[f32]
+    func stbiHdrToLdrGamma(gamma: f32)
+    func stbiHdrToLdrScale(scale: f32)
+    func stbiLdrToHdrGamma(gamma: f32)
+    func stbiLdrToHdrScale(scale: f32)
+    func stbiIsHdrFromCallbacks(clbk: ptr[StbiIoCallbacks], user: ptr[u8]): int
+    func stbiIsHdrFromMemory(buffer: ptr[StbiUc], len: int): int
+    func stbiIsHdr(filename: ptr[i8]): int
+    func stbiIsHdrFromFile(f: ptr[FILE]): int
+    func stbiFailureReason(): ptr[i8]
+    func stbiImageFree(retvalFromStbiLoad: ptr[u8])
+    func stbiInfoFromMemory(buffer: ptr[StbiUc], len: int, x: ptr[int], y: ptr[int], comp: ptr[int]): int
+    func stbiInfoFromCallbacks(clbk: ptr[StbiIoCallbacks], user: ptr[u8], x: ptr[int], y: ptr[int], comp: ptr[int]): int
+    func stbiIs16BitFromMemory(buffer: ptr[StbiUc], len: int): int
+    func stbiIs16BitFromCallbacks(clbk: ptr[StbiIoCallbacks], user: ptr[u8]): int
+    func stbiInfo(filename: ptr[i8], x: ptr[int], y: ptr[int], comp: ptr[int]): int
+    func stbiInfoFromFile(f: ptr[FILE], x: ptr[int], y: ptr[int], comp: ptr[int]): int
+    func stbiIs16Bit(filename: ptr[i8]): int
+    func stbiIs16BitFromFile(f: ptr[FILE]): int
+    func stbiSetUnpremultiplyOnLoad(flagTrueIfShouldUnpremultiply: int)
+    func stbiConvertIphonePngToRgb(flagTrueIfShouldConvert: int)
+    func stbiSetFlipVerticallyOnLoad(flagTrueIfShouldFlip: int)
+    func stbiSetUnpremultiplyOnLoadThread(flagTrueIfShouldUnpremultiply: int)
+    func stbiConvertIphonePngToRgbThread(flagTrueIfShouldConvert: int)
+    func stbiSetFlipVerticallyOnLoadThread(flagTrueIfShouldFlip: int)
+    func stbiZlibDecodeMallocGuesssize(buffer: ptr[i8], len: int, initialSize: int, outlen: ptr[int]): ptr[i8]
+    func stbiZlibDecodeMallocGuesssizeHeaderflag(buffer: ptr[i8], len: int, initialSize: int, outlen: ptr[int], parseHeader: int): ptr[i8]
+    func stbiZlibDecodeMalloc(buffer: ptr[i8], len: int, outlen: ptr[int]): ptr[i8]
+    func stbiZlibDecodeBuffer(obuffer: ptr[i8], olen: int, ibuffer: ptr[i8], ilen: int): int
+    func stbiZlibDecodeNoheaderMalloc(buffer: ptr[i8], len: int, outlen: ptr[int]): ptr[i8]
+    func stbiZlibDecodeNoheaderBuffer(obuffer: ptr[i8], olen: int, ibuffer: ptr[i8], ilen: int): int
+}
+

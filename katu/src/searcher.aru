@@ -1,0 +1,172 @@
+module searcher
+
+import std.alloc.vec as vec
+import std.core.ascii as ascii
+import std.core.simd as simd
+import std.core.slice as slice
+import std.core.str as strings
+
+/// Position of a match within a file's byte buffer.
+public struct Match {
+    /// 1-based line number of the match.
+    public line: uint
+    /// Byte offset of the first matching byte within the file buffer.
+    public offset: usize
+    /// Byte length of the matching line (for printing).
+    public line_start: usize
+    public line_end: usize
+}
+
+/// Options controlling the search behaviour.
+public struct SearchOpts {
+    public ignore_case: bool
+}
+
+/// Returns a `SearchOpts` with defaults (case-sensitive).
+public func defaultOpts(): SearchOpts {
+    return SearchOpts { ignore_case: false }
+}
+
+/// Compares two byte slices for equality, optionally ASCII case-insensitively.
+func bytesMatchAt(haystack: []u8, pos: usize, needle: []u8, ignore_case: bool): bool {
+    let nlen = slice.len<u8>(needle)
+    let hlen = slice.len<u8>(haystack)
+    if pos + nlen > hlen {
+        return false
+    }
+    let mut k: usize = 0
+    while k < nlen {
+        let h = haystack[pos + k]
+        let n = needle[k]
+        if ignore_case {
+            let hlo = ascii.toAsciiLower(h)
+            let nlo = ascii.toAsciiLower(n)
+            if hlo != nlo {
+                return false
+            }
+        } else {
+            if h != n {
+                return false
+            }
+        }
+        k = k + 1
+    }
+    return true
+}
+
+/// Scans forward from `start` until a newline byte (`10`) or the end of `haystack`.
+/// Uses 16-byte SIMD `U8x16` vectorized scans when at least 16 bytes remain.
+@Effects(Foreign)
+public func scanToNewline(haystack: []u8, start: usize): usize {
+    let hlen = slice.len<u8>(haystack)
+    let mut pos = start
+    let lf_vec = simd.U8x16.splat(10 as u8)
+
+    while pos + 16 <= hlen {
+        match slice.subslice<u8>(haystack, pos, 16) {
+            Option.Some(chunk) => {
+                match simd.U8x16.loadUnaligned(chunk) {
+                    Option.Some(v) => {
+                        let mask = v.eq(lf_vec)
+                        if !mask.anyTrue() {
+                            pos = pos + 16
+                            continue
+                        }
+                    }
+                    Option.None => {}
+                }
+            }
+            Option.None => {}
+        }
+        break
+    }
+
+    while pos < hlen && haystack[pos] != 10 {
+        pos = pos + 1
+    }
+    return pos
+}
+
+/// Finds all occurrences of `needle` in `haystack`.
+///
+/// This is the hot inner loop that the compiler must compile efficiently:
+/// - In case-sensitive mode, 16-byte chunks with neither `needle[0]` nor `\n`
+///   are skipped in a single `U8x16` comparison + `Mask8x16.anyTrue()` test.
+/// - The index `i` stays in a register throughout the outer loop.
+/// - The result Vec is the only heap allocation; the loop itself is zero-alloc.
+@Effects(Foreign)
+public func findMatches(haystack: []u8, needle: []u8, opts: ref SearchOpts): vec.Vec<Match> {
+    let mut results = vec.Vec.new<Match>()
+    let hlen = slice.len<u8>(haystack)
+    let nlen = slice.len<u8>(needle)
+    if nlen == 0 || hlen == 0 || nlen > hlen {
+        return results
+    }
+
+    let mut i: usize = 0
+    let mut line: uint = 1
+    let mut line_start: usize = 0
+
+    let first_byte = needle[0]
+    let first_vec = simd.U8x16.splat(first_byte)
+    let lf_vec = simd.U8x16.splat(10 as u8)
+    let use_simd = !opts.ignore_case
+
+    while i < hlen {
+        if use_simd && i + 16 <= hlen {
+            match slice.subslice<u8>(haystack, i, 16) {
+                Option.Some(chunk) => {
+                    match simd.U8x16.loadUnaligned(chunk) {
+                        Option.Some(v) => {
+                            let m_first = v.eq(first_vec)
+                            let m_lf = v.eq(lf_vec)
+                            if !m_first.bitOr(m_lf).anyTrue() {
+                                i = i + 16
+                                continue
+                            }
+                        }
+                        Option.None => {}
+                    }
+                }
+                Option.None => {}
+            }
+        }
+
+        let b = haystack[i]
+        if b == 10 {
+            // LF: advance line counter, record new line start
+            line = line + 1
+            i = i + 1
+            line_start = i
+            continue
+        }
+        // Try to match needle at position i
+        if bytesMatchAt(haystack, i, needle, opts.ignore_case) {
+            // Find end of current line for printing using SIMD scan
+            let line_end = scanToNewline(haystack, i)
+            let m = Match {
+                line: line,
+                offset: i,
+                line_start: line_start,
+                line_end: line_end,
+            }
+            results.push(m)
+            // Skip to end of line to avoid duplicate matches on same line
+            i = line_end
+        } else {
+            i = i + 1
+        }
+    }
+    return results
+}
+
+/// Returns the byte slice for the line that starts at `line_start` and ends
+/// at `line_end` (exclusive). This is a zero-copy borrow of the original
+/// buffer — no String allocation occurs.
+public func lineSlice(haystack: []u8, line_start: usize, line_end: usize): []u8 {
+    let count = if line_end >= line_start { line_end - line_start } else { 0 }
+    match slice.subslice<u8>(haystack, line_start, count) {
+        Option.Some(s) => { return s }
+        Option.None => { return strings.asBytes("") }
+    }
+}

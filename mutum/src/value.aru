@@ -1,0 +1,256 @@
+module value
+
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+
+/// All value variants supported in the template evaluation context.
+public enum ValueKind {
+    Null,
+    Bool,
+    Int,
+    Str,
+    List,
+}
+
+/// A polymorphic value in the Mutum context.
+public struct Value {
+    public kind: ValueKind
+    public boolVal: bool
+    public intVal: i64
+    public strVal: ownedStrings.String
+    public listVal: vec.Vec<ownedStrings.String>
+}
+
+/// Creates a null/absent value.
+public func newNull(): Value {
+    return Value {
+        kind: ValueKind.Null,
+        boolVal: false,
+        intVal: 0,
+        strVal: ownedStrings.String.new(),
+        listVal: vec.Vec.new<ownedStrings.String>(),
+    }
+}
+
+/// Creates a boolean value.
+public func newBool(val: bool): Value {
+    return Value {
+        kind: ValueKind.Bool,
+        boolVal: val,
+        intVal: 0,
+        strVal: ownedStrings.String.new(),
+        listVal: vec.Vec.new<ownedStrings.String>(),
+    }
+}
+
+/// Creates an integer value.
+public func newInt(val: i64): Value {
+    return Value {
+        kind: ValueKind.Int,
+        boolVal: false,
+        intVal: val,
+        strVal: ownedStrings.String.new(),
+        listVal: vec.Vec.new<ownedStrings.String>(),
+    }
+}
+
+/// Creates a string value.
+public func newStr(val: str): Value {
+    return Value {
+        kind: ValueKind.Str,
+        boolVal: false,
+        intVal: 0,
+        strVal: ownedStrings.String.from(val),
+        listVal: vec.Vec.new<ownedStrings.String>(),
+    }
+}
+
+/// Creates a list-of-strings value.
+public func newList(items: []str): Value {
+    let mut list = vec.Vec.new<ownedStrings.String>()
+    let n = slice.len<str>(items)
+    let mut i: usize = 0
+    while i < n {
+        list.push(ownedStrings.String.from(items[i]))
+        i = i + 1
+    }
+    return Value {
+        kind: ValueKind.List,
+        boolVal: false,
+        intVal: 0,
+        strVal: ownedStrings.String.new(),
+        listVal: list,
+    }
+}
+
+/// Evaluates if the value is truthy (used in `{% if ... %}`).
+public func isTruthy(self: ref Value): bool {
+    match self.kind {
+        ValueKind.Null => {
+            return false
+        }
+        ValueKind.Bool => {
+            return self.boolVal
+        }
+        ValueKind.Int => {
+            return self.intVal != 0
+        }
+        ValueKind.Str => {
+            return self.strVal.len() > 0
+        }
+        ValueKind.List => {
+            return self.listVal.len() > 0
+        }
+    }
+}
+
+/// Checks whether this value is Null.
+public func isNull(self: ref Value): bool {
+    match self.kind {
+        ValueKind.Null => {
+            return true
+        }
+        ValueKind.Bool => {
+            return false
+        }
+        ValueKind.Int => {
+            return false
+        }
+        ValueKind.Str => {
+            return false
+        }
+        ValueKind.List => {
+            return false
+        }
+    }
+}
+
+/// Checks whether this value is a String.
+public func isStr(self: ref Value): bool {
+    match self.kind {
+        ValueKind.Str => {
+            return true
+        }
+        ValueKind.Null => {
+            return false
+        }
+        ValueKind.Bool => {
+            return false
+        }
+        ValueKind.Int => {
+            return false
+        }
+        ValueKind.List => {
+            return false
+        }
+    }
+}
+
+/// Checks whether this value is a List.
+public func isList(self: ref Value): bool {
+    match self.kind {
+        ValueKind.List => {
+            return true
+        }
+        ValueKind.Null => {
+            return false
+        }
+        ValueKind.Bool => {
+            return false
+        }
+        ValueKind.Int => {
+            return false
+        }
+        ValueKind.Str => {
+            return false
+        }
+    }
+}
+
+/// Helper function to format an i64 as ASCII bytes into a vector.
+func writeIntToBuf(val: i64, out: mut ref vec.Vec<u8>): void {
+    if val == 0 {
+        out.push(48 as u8) // '0'
+        return
+    }
+
+    let mut n = val
+    if n < 0 {
+        out.push(45 as u8) // '-'
+        n = 0 - n
+    }
+
+    let mut digits = vec.Vec.new<u8>()
+    while n > 0 {
+        let digit = ((n % 10) as u8) + 48
+        digits.push(digit)
+        n = n / 10
+    }
+
+    let dLen = digits.len()
+    let mut i: usize = 0
+    while i < dLen {
+        let idx = dLen - 1 - i
+        out.push(digits.asSlice()[idx])
+        i = i + 1
+    }
+    return
+}
+
+/// Emits the raw text representation of this value into the destination buffer.
+public func renderRaw(self: ref Value, out: mut ref vec.Vec<u8>): void {
+    match self.kind {
+        ValueKind.Null => {
+            return
+        }
+        ValueKind.Bool => {
+            if self.boolVal {
+                out.push(116 as u8)
+                out.push(114 as u8)
+                out.push(117 as u8)
+                out.push(101 as u8)
+            } else {
+                out.push(102 as u8)
+                out.push(97 as u8)
+                out.push(108 as u8)
+                out.push(115 as u8)
+                out.push(101 as u8)
+            }
+        }
+        ValueKind.Int => {
+            writeIntToBuf(self.intVal, out)
+        }
+        ValueKind.Str => {
+            let bytes = self.strVal.asBytes()
+            let n = slice.len<u8>(bytes)
+            let mut i: usize = 0
+            while i < n {
+                out.push(bytes[i])
+                i = i + 1
+            }
+        }
+        ValueKind.List => {
+            // Emits comma-separated string items
+            let s = self.listVal.asSlice()
+            let n = slice.len<ownedStrings.String>(s)
+            let mut i: usize = 0
+            while i < n {
+                let itemStr = ref s[i]
+                let itemBytes = itemStr.asBytes()
+                let itemLen = slice.len<u8>(itemBytes)
+                let mut j: usize = 0
+                while j < itemLen {
+                    out.push(itemBytes[j])
+                    j = j + 1
+                }
+                if i + 1 < n {
+                    out.push(44 as u8) // ','
+                    out.push(32 as u8) // ' '
+                }
+                i = i + 1
+            }
+        }
+    }
+    return
+}

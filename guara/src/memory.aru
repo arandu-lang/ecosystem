@@ -1,0 +1,148 @@
+module memory
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+
+/// Little-endian linear memory bus for the RV32I processor.
+public struct Memory {
+    public bytes: vec.Vec<u8>
+    public size: usize
+}
+
+/// Allocates a zero-initialized linear memory of `size` bytes.
+public func newMemory(size: usize): Memory {
+    let mut b = vec.Vec.new<u8>()
+    let mut i: usize = 0
+    while i < size {
+        b.push(0 as u8)
+        i = i + 1
+    }
+    return Memory {
+        bytes: b,
+        size: size,
+    }
+}
+
+/// Loads a slice of 32-bit instructions into memory starting at `base_addr`.
+public func Memory.loadProgramWords(self: mut ref Memory, base_addr: u32, words: []u32): bool {
+    let n = slice.len<u32>(words)
+    let mut i: usize = 0
+    while i < n {
+        let addr = base_addr + ((i * 4) as u32)
+        if !self.writeU32(addr, words[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Checks whether an access of `width` bytes at `addr` is within RAM bounds.
+public func Memory.inBounds(self: ref Memory, addr: u32, width: usize): bool {
+    let idx = addr as usize
+    return idx + width <= self.size
+}
+
+/// Fast unchecked unsigned 8-bit read (`LBU`). Caller must verify `inBounds(addr, 1)`
+/// or rely on slice bounds check.
+public func Memory.loadU8Fast(self: ref Memory, addr: u32): u8 {
+    let s = self.bytes.asSlice()
+    return s[addr as usize]
+}
+
+/// Fast unchecked little-endian unsigned 16-bit read (`LHU`).
+public func Memory.loadU16Fast(self: ref Memory, addr: u32): u16 {
+    let idx = addr as usize
+    let s = self.bytes.asSlice()
+    let b0 = s[idx] as u16
+    let b1 = s[idx + 1] as u16
+    return b0 | (b1 << 8)
+}
+
+/// Fast unchecked little-endian 32-bit word read (`LW` / instruction fetch).
+/// Returns `u32` directly in a register without allocating a `Result` payload.
+public func Memory.loadU32Fast(self: ref Memory, addr: u32): u32 {
+    let idx = addr as usize
+    let s = self.bytes.asSlice()
+    let b0 = s[idx] as u32
+    let b1 = s[idx + 1] as u32
+    let b2 = s[idx + 2] as u32
+    let b3 = s[idx + 3] as u32
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+/// Reads an unsigned 8-bit byte (`LBU`) from `addr`.
+public func Memory.readU8(self: ref Memory, addr: u32): Result<u8, str> {
+    let idx = addr as usize
+    if idx >= self.size {
+        return Result.Err("guara: memory readU8 out of bounds")
+    }
+    let s = self.bytes.asSlice()
+    return Result.Ok(s[idx])
+}
+
+/// Reads a little-endian unsigned 16-bit halfword (`LHU`) from `addr`.
+public func Memory.readU16(self: ref Memory, addr: u32): Result<u16, str> {
+    let idx = addr as usize
+    if idx + 1 >= self.size {
+        return Result.Err("guara: memory readU16 out of bounds")
+    }
+    let s = self.bytes.asSlice()
+    let b0 = s[idx] as u16
+    let b1 = s[idx + 1] as u16
+    return Result.Ok(b0 | (b1 << 8))
+}
+
+/// Reads a little-endian 32-bit word (`LW` / instruction fetch) from `addr`.
+public func Memory.readU32(self: ref Memory, addr: u32): Result<u32, str> {
+    let idx = addr as usize
+    if idx + 3 >= self.size {
+        return Result.Err("guara: memory readU32 out of bounds")
+    }
+    let s = self.bytes.asSlice()
+    let b0 = s[idx] as u32
+    let b1 = s[idx + 1] as u32
+    let b2 = s[idx + 2] as u32
+    let b3 = s[idx + 3] as u32
+    let word = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    return Result.Ok(word)
+}
+
+/// Writes an 8-bit byte (`SB`) to `addr`.
+public func Memory.writeU8(self: mut ref Memory, addr: u32, val: u8): bool {
+    let idx = addr as usize
+    if idx >= self.size {
+        return false
+    }
+    return self.bytes.set(idx, val)
+}
+
+/// Writes a little-endian 16-bit halfword (`SH`) to `addr`.
+public func Memory.writeU16(self: mut ref Memory, addr: u32, val: u16): bool {
+    let idx = addr as usize
+    if idx + 1 >= self.size {
+        return false
+    }
+    let b0 = (val & 0xFF) as u8
+    let b1 = ((val >> 8) & 0xFF) as u8
+    self.bytes.set(idx, b0)
+    self.bytes.set(idx + 1, b1)
+    return true
+}
+
+/// Writes a little-endian 32-bit word (`SW`) to `addr`.
+public func Memory.writeU32(self: mut ref Memory, addr: u32, val: u32): bool {
+    let idx = addr as usize
+    if idx + 3 >= self.size {
+        return false
+    }
+    let b0 = (val & 0xFF) as u8
+    let b1 = ((val >> 8) & 0xFF) as u8
+    let b2 = ((val >> 16) & 0xFF) as u8
+    let b3 = ((val >> 24) & 0xFF) as u8
+    self.bytes.set(idx, b0)
+    self.bytes.set(idx + 1, b1)
+    self.bytes.set(idx + 2, b2)
+    self.bytes.set(idx + 3, b3)
+    return true
+}

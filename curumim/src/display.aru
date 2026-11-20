@@ -1,0 +1,186 @@
+module display
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+import io
+
+/// 64x32 monochrome display buffer for CHIP-8.
+public struct Display {
+    public pixels: vec.Vec<u8>
+    public width: usize
+    public height: usize
+}
+
+/// Creates a blank 64x32 display buffer (2048 pixels set to 0).
+public func newDisplay(): Display {
+    let mut px = vec.Vec.new<u8>()
+    let mut i: usize = 0
+    while i < 2048 {
+        px.push(0 as u8)
+        i = i + 1
+    }
+    return Display {
+        pixels: px,
+        width: 64,
+        height: 32,
+    }
+}
+
+/// Clears the entire display buffer (all pixels turned off).
+public func Display.clear(self: mut ref Display): void {
+    let mut i: usize = 0
+    while i < 2048 {
+        self.pixels.set(i, 0 as u8)
+        i = i + 1
+    }
+    return
+}
+
+/// Gets the pixel state (0 or 1) at coordinate (x, y).
+public func Display.getPixel(self: ref Display, x: usize, y: usize): u8 {
+    if x >= 64 || y >= 32 {
+        return 0
+    }
+    let s = self.pixels.asSlice()
+    return s[y * 64 + x]
+}
+
+/// Sets the pixel state at coordinate (x, y).
+public func Display.setPixel(self: mut ref Display, x: usize, y: usize, val: u8): void {
+    if x < 64 && y < 32 {
+        self.pixels.set(y * 64 + x, val)
+    }
+    return
+}
+
+/// Draws an N-byte sprite at (xStart, yStart) using XOR mode.
+/// Returns true if any active pixel was erased (collision flag for VF).
+public func Display.drawSprite(
+    self: mut ref Display,
+    xStart: usize,
+    yStart: usize,
+    sprite: []u8,
+): bool {
+    let x0 = xStart % 64
+    let y0 = yStart % 32
+    let numRows = slice.len<u8>(sprite)
+    let mut collision = false
+
+    let mut row: usize = 0
+    while row < numRows {
+        let curY = y0 + row
+        if curY >= 32 {
+            row = numRows
+        } else {
+            let spriteByte = sprite[row]
+            let mut col: usize = 0
+            while col < 8 {
+                let curX = x0 + col
+                if curX < 64 {
+                    let shift = (7 - col) as u8
+                    let bit = ((spriteByte >> shift) & (1 as u8))
+                    if bit == 1 {
+                        let idx = curY * 64 + curX
+                        let oldVal = self.pixels.asSlice()[idx]
+                        if oldVal == 1 {
+                            collision = true
+                            self.pixels.set(idx, 0 as u8)
+                        } else {
+                            self.pixels.set(idx, 1 as u8)
+                        }
+                    }
+                }
+                col = col + 1
+            }
+            row = row + 1
+        }
+    }
+    return collision
+}
+
+func toHexNibble(n: u8): str {
+    if n == 0 { return "0" }
+    if n == 1 { return "1" }
+    if n == 2 { return "2" }
+    if n == 3 { return "3" }
+    if n == 4 { return "4" }
+    if n == 5 { return "5" }
+    if n == 6 { return "6" }
+    if n == 7 { return "7" }
+    if n == 8 { return "8" }
+    if n == 9 { return "9" }
+    if n == 10 { return "A" }
+    if n == 11 { return "B" }
+    if n == 12 { return "C" }
+    if n == 13 { return "D" }
+    if n == 14 { return "E" }
+    return "F"
+}
+
+/// Renders the 64x32 screen to standard output using ANSI Truecolor
+/// and Unicode half-block characters (▀ U+2580).
+/// Each printed character encodes two vertical pixels (top and bottom).
+public func Display.renderToTerminal(
+    self: ref Display,
+    theme: usize,
+    fps: u32,
+    cycles: u64,
+    pc: u16,
+): void {
+    // Reposition cursor to top-left of the screen
+    io.print("\u{1b}[H")
+
+    // Theme color codes:
+    // 0: CRT Phosphor Green
+    // 1: Cyberpunk Amber
+    // 2: Synthwave Cyan
+    let mut fgOn = "\u{1b}[38;2;60;255;80m"
+    if theme == 1 {
+        fgOn = "\u{1b}[38;2;255;170;0m"
+    } else if theme == 2 {
+        fgOn = "\u{1b}[38;2;0;255;240m"
+    }
+
+    let bgOff = "\u{1b}[48;2;12;18;14m"
+    let reset = "\u{1b}[0m"
+
+    // Top border
+    io.println("╭────────────────────── CURUMIM CHIP-8 ──────────────────────╮")
+
+    let s = self.pixels.asSlice()
+    let mut yPair: usize = 0
+    while yPair < 16 {
+        let yTop = yPair * 2
+        let yBottom = yTop + 1
+
+        io.print("│")
+        let mut x: usize = 0
+        while x < 64 {
+            let topPixel = s[yTop * 64 + x]
+            let bottomPixel = s[yBottom * 64 + x]
+
+            if topPixel == 1 && bottomPixel == 1 {
+                io.print("${fgOn}█${reset}")
+            } else if topPixel == 1 && bottomPixel == 0 {
+                io.print("${fgOn}▀${reset}")
+            } else if topPixel == 0 && bottomPixel == 1 {
+                io.print("${fgOn}▄${reset}")
+            } else {
+                io.print(" ")
+            }
+            x = x + 1
+        }
+        io.println("│")
+        yPair = yPair + 1
+    }
+
+    let n3 = toHexNibble(((pc >> 12) & 0xF) as u8)
+    let n2 = toHexNibble(((pc >> 8) & 0xF) as u8)
+    let n1 = toHexNibble(((pc >> 4) & 0xF) as u8)
+    let n0 = toHexNibble((pc & 0xF) as u8)
+
+    // Bottom border with status HUD
+    io.println("╰────────────────────────────────────────────────────────────╯")
+    io.println(" PC: 0x${n3}${n2}${n1}${n0} | Move: ◄ ► / A D | Rotate: ▲ / W | Drop: ▼ / S")
+    return
+}

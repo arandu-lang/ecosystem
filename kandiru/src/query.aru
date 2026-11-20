@@ -1,0 +1,214 @@
+module query
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+import std.core.str as strings
+
+import self.parser as parser
+from self.parser import { JsonKind }
+
+public enum QueryStep {
+    Key,
+    Index,
+    Iterate,
+}
+
+public struct Step {
+    public kind: QueryStep
+    public key_start: usize
+    public key_len: usize
+    public index: usize
+}
+
+func isDigit(b: u8): bool {
+    return b >= 48 && b <= 57
+}
+
+/// Parses a jq-like query string (e.g. `.`, `.name`, `.[1]`, `.items.[2].id`, `.[]`).
+@Effects(Foreign)
+public func parseQuery(q: str): vec.Vec<Step> {
+    let mut steps = vec.Vec.new<Step>()
+    let b = strings.asBytes(q)
+    let len = slice.len<u8>(b)
+    if len == 0 {
+        return steps
+    }
+
+    let mut i: usize = 0
+    while i < len {
+        if b[i] == 46 { // '.'
+            i = i + 1
+            if i >= len {
+                break
+            }
+            if b[i] == 91 { // '['
+                // Array index or iterate: .[idx] or .[]
+                i = i + 1
+                if i < len && b[i] == 93 { // ']' -> iterate .[]
+                    steps.push(Step {
+                        kind: QueryStep.Iterate,
+                        key_start: 0,
+                        key_len: 0,
+                        index: 0,
+                    })
+                    i = i + 1
+                } else {
+                    let mut idx_val: usize = 0
+                    while i < len && isDigit(b[i]) {
+                        idx_val = idx_val * 10 + ((b[i] - 48) as usize)
+                        i = i + 1
+                    }
+                    if i < len && b[i] == 93 { // ']'
+                        i = i + 1
+                    }
+                    steps.push(Step {
+                        kind: QueryStep.Index,
+                        key_start: 0,
+                        key_len: 0,
+                        index: idx_val,
+                    })
+                }
+            } else {
+                // Object key: e.g. .name
+                let kStart = i
+                while i < len && b[i] != 46 && b[i] != 91 {
+                    i = i + 1
+                }
+                let kLen = i - kStart
+                if kLen > 0 {
+                    steps.push(Step {
+                        kind: QueryStep.Key,
+                        key_start: kStart,
+                        key_len: kLen,
+                        index: 0,
+                    })
+                }
+            }
+        } else if b[i] == 91 { // direct '[' without dot
+            i = i + 1
+            if i < len && b[i] == 93 {
+                steps.push(Step {
+                    kind: QueryStep.Iterate,
+                    key_start: 0,
+                    key_len: 0,
+                    index: 0,
+                })
+                i = i + 1
+            } else {
+                let mut idx_val: usize = 0
+                while i < len && isDigit(b[i]) {
+                    idx_val = idx_val * 10 + ((b[i] - 48) as usize)
+                    i = i + 1
+                }
+                if i < len && b[i] == 93 {
+                    i = i + 1
+                }
+                steps.push(Step {
+                    kind: QueryStep.Index,
+                    key_start: 0,
+                    key_len: 0,
+                    index: idx_val,
+                })
+            }
+        } else {
+            i = i + 1
+        }
+    }
+    return steps
+}
+
+func bytesEqual(a: []u8, aStart: usize, b: []u8, bStart: usize, len: usize): bool {
+    let aTotal = slice.len<u8>(a)
+    let bTotal = slice.len<u8>(b)
+    if aStart + len > aTotal || bStart + len > bTotal {
+        return false
+    }
+    let mut i: usize = 0
+    while i < len {
+        if a[aStart + i] != b[bStart + i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Applies parsed query steps to the JSON AST root node, collecting all matching node indices.
+public func applyQuery(arena: ref parser.JsonArena, src: []u8, steps: ref vec.Vec<Step>, qBytes: []u8): vec.Vec<usize> {
+    let mut current = vec.Vec.new<usize>()
+    current.push(arena.root)
+
+    let nSteps = steps.len()
+    if nSteps == 0 {
+        return current
+    }
+
+    let stepsSlice = steps.asSlice()
+    let mut sIdx: usize = 0
+
+    while sIdx < nSteps {
+        let step = ref stepsSlice[sIdx]
+        let mut next = vec.Vec.new<usize>()
+        let currLen = current.len()
+        let currSlice = current.asSlice()
+        let mut cIdx: usize = 0
+
+        while cIdx < currLen {
+            let nodeIdx = currSlice[cIdx]
+            let n = arena.node(nodeIdx)
+
+            match step.kind {
+                QueryStep.Key => {
+                    if n.kind is JsonKind.Object {
+                        let mut ei: usize = 0
+                        while ei < n.child_count {
+                            let entry = arena.objectEntry(nodeIdx, ei)
+                            if entry.key_len == step.key_len {
+                                if bytesEqual(src, entry.key_start, qBytes, step.key_start, step.key_len) {
+                                    next.push(entry.value_idx)
+                                }
+                            }
+                            ei = ei + 1
+                        }
+                    }
+                }
+                QueryStep.Index => {
+                    if n.kind is JsonKind.Array {
+                        if step.index < n.child_count {
+                            next.push(arena.arrayChild(nodeIdx, step.index))
+                        }
+                    }
+                }
+                QueryStep.Iterate => {
+                    if n.kind is JsonKind.Array {
+                        let mut ai: usize = 0
+                        while ai < n.child_count {
+                            next.push(arena.arrayChild(nodeIdx, ai))
+                            ai = ai + 1
+                        }
+                    } else if n.kind is JsonKind.Object {
+                        let mut oi: usize = 0
+                        while oi < n.child_count {
+                            let entry = arena.objectEntry(nodeIdx, oi)
+                            next.push(entry.value_idx)
+                            oi = oi + 1
+                        }
+                    }
+                }
+            }
+            cIdx = cIdx + 1
+        }
+
+        current = vec.Vec.new<usize>()
+        let nextLen = next.len()
+        let nextSlice = next.asSlice()
+        let mut ni: usize = 0
+        while ni < nextLen {
+            current.push(nextSlice[ni])
+            ni = ni + 1
+        }
+        sIdx = sIdx + 1
+    }
+
+    return current
+}

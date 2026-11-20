@@ -1,0 +1,55 @@
+module ppm
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+import std.core.str as strings
+
+func appendStr(out: mut ref vec.Vec<u8>, s: ref str): void {
+    let b = strings.asBytes(s)
+    let n = slice.len<u8>(b)
+    let mut i: usize = 0
+    while i < n {
+        out.push(b[i])
+        i = i + 1
+    }
+}
+
+/// Writes `bytes` to `path`, replacing any existing content.
+///
+/// BLOCKED: the current stdlib exposes whole-file reads only. RFC 0026 §3.5
+/// specifies `File.open`/`File.writeAll`/`File.close`, but the runtime bridges
+/// (`ar_fs_open`/`ar_fs_write`) deliberately return -1 and no public file-write
+/// API exists yet, so this reports the missing capability at runtime. Replace
+/// the body with the real calls once the toolchain gains them.
+@Effects(FileWrite, Foreign)
+func writeAll(path: str, bytes: []u8): Result<bool, str> {
+    return Result.Err("kururu: file writes are not supported by this Arandu toolchain")
+}
+
+/// Write a binary PPM (P6 format) file.
+@Effects(FileWrite, Foreign)
+public func writePpm(path_str: str, pixels: []u8, width: uint, height: uint): Result<bool, str> {
+    let mut file_buf = vec.Vec.new<u8>()
+
+    // P6 header.
+    // NOTE: interpolated values are bound to a local first; handing an
+    // interpolation temporary straight to a `ref str` parameter double-frees
+    // it in the current toolchain.
+    appendStr(mut ref file_buf, "P6\n")
+    let dims = "${width} ${height}\n255\n"
+    appendStr(mut ref file_buf, dims)
+
+    let px_len = slice.len<u8>(pixels)
+    let mut i: usize = 0
+    while i < px_len {
+        file_buf.push(pixels[i])
+        i = i + 1
+    }
+
+    let write_res = writeAll(path_str, file_buf.asSlice())
+
+    match write_res {
+        Ok(_) => { return Result.Ok(true) }
+        Err(_) => { return Result.Err("failed to write PPM file") }
+    }
+}

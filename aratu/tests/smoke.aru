@@ -1,0 +1,187 @@
+module aratu_tests
+
+import std.testing as testing
+import std.alloc.vec as vec
+import std.alloc.string as ownedStrings
+import std.core.slice as slice
+import std.core.str as strings
+
+from self.log import { RecordType }
+import self.log as log
+import self.search as search
+import self.store as store
+
+func toBytes(s: ref str): []u8 {
+    return strings.asBytes(s)
+}
+
+@Test
+func crc32_matches_known_string(): void {
+    // "123456789" CRC32 standard check value is 0xcbf43926
+    let b = toBytes("123456789")
+    let c = log.crc32(b)
+    testing.expect(c == 0xcbf43926, "CRC32 standard vector mismatch")
+}
+
+@Test
+func record_roundtrip_encoding(): void {
+    let mut rec = log.Record {
+        kind: log.RecordType.Put,
+        key: ownedStrings.String.from("fruit"),
+        value: ownedStrings.String.from("abacaxi"),
+    }
+
+    let mut buf = vec.Vec.new<u8>()
+    log.encodeRecord(ref rec, mut ref buf)
+    testing.expect(buf.len() > 13, "encoded record must be at least header + crc")
+
+    match log.readRecord(buf.asSlice(), 0) {
+        Ok(mut decoded) => {
+            let ok_put = match decoded.kind {
+                RecordType.Put => true
+                _ => false
+            }
+            testing.expect(ok_put, "decoded kind mismatch")
+            testing.expect(decoded.key.asStr() == "fruit", "key mismatch")
+            testing.expect(decoded.value.asStr() == "abacaxi", "val mismatch")
+        }
+        Err(e) => {
+            testing.expect(false, "record decode failed: ${e}")
+        }
+    }
+
+}
+
+@Test
+func binary_search_finds_keys(): void {
+    let mut entries = vec.Vec.new<search.IndexEntry>()
+
+    let e1 = search.IndexEntry {
+        key: ownedStrings.String.from("alpha"),
+        offset: 0,
+        deleted: false,
+    }
+    let e2 = search.IndexEntry {
+        key: ownedStrings.String.from("beta"),
+        offset: 100,
+        deleted: false,
+    }
+    let e3 = search.IndexEntry {
+        key: ownedStrings.String.from("gamma"),
+        offset: 200,
+        deleted: false,
+    }
+
+    entries.push(e1)
+    entries.push(e2)
+    entries.push(e3)
+
+    let s = entries.asSlice()
+    match search.binarySearch(s, "beta") {
+        Some(idx) => {
+            testing.expect(idx == 1, "found beta at idx 1")
+        }
+        None => {
+            testing.expect(false, "failed to find beta")
+        }
+    }
+
+    match search.binarySearch(s, "omega") {
+        Some(_) => {
+            testing.expect(false, "found non-existent key")
+        }
+        None => {
+            testing.expect(true, "correctly returned None for missing key")
+        }
+    }
+}
+
+@Test
+func store_put_get_del_and_compact_roundtrip(): void {
+    let db_path = "aratu_test_roundtrip.db"
+    match store.openStore(db_path) {
+        Ok(mut s) => {
+            match s.compact() {
+                Ok(_) => {}
+                Err(_) => {}
+            }
+            match s.put("lang", "arandu") {
+                Ok(_) => {}
+                Err(e) => { testing.expect(false, "put 1 failed: ${e}") }
+            }
+            match s.put("version", "0.1.11") {
+                Ok(_) => {}
+                Err(e) => { testing.expect(false, "put 2 failed: ${e}") }
+            }
+            match s.put("temp", "to_be_deleted") {
+                Ok(_) => {}
+                Err(e) => { testing.expect(false, "put 3 failed: ${e}") }
+            }
+            match s.put("lang", "arandu-fast") {
+                Ok(_) => {}
+                Err(e) => { testing.expect(false, "put 4 failed: ${e}") }
+            }
+
+            match s.get("lang") {
+                Ok(v) => {
+                    testing.expect(v.asStr() == "arandu-fast", "updated value mismatch")
+                }
+                Err(e) => {
+                    testing.expect(false, "get lang failed: ${e}")
+                }
+            }
+
+            match s.del("temp") {
+                Ok(_) => {}
+                Err(e) => { testing.expect(false, "del temp failed: ${e}") }
+            }
+            match s.get("temp") {
+                Ok(_) => {
+                    testing.expect(false, "deleted key should not be returned")
+                }
+                Err(_) => {
+                    testing.expect(true, "deleted key returned Err")
+                }
+            }
+
+            let size_before = s.file_size
+            match s.compact() {
+                Ok(live_count) => {
+                    testing.expect(live_count == 2, "expected 2 live keys after compaction")
+                    testing.expect(s.file_size < size_before, "compacted log should be smaller")
+                }
+                Err(e) => {
+                    testing.expect(false, "compact failed: ${e}")
+                }
+            }
+
+            // Reopen from disk and verify compacted state persists
+            match store.openStore(db_path) {
+                Ok(s2) => {
+                    match s2.get("lang") {
+                        Ok(v2) => {
+                            testing.expect(v2.asStr() == "arandu-fast", "reopened lang value mismatch")
+                        }
+                        Err(e) => {
+                            testing.expect(false, "reopened get lang failed: ${e}")
+                        }
+                    }
+                    match s2.get("version") {
+                        Ok(v3) => {
+                            testing.expect(v3.asStr() == "0.1.11", "reopened version value mismatch")
+                        }
+                        Err(e) => {
+                            testing.expect(false, "reopened get version failed: ${e}")
+                        }
+                    }
+                }
+                Err(e) => {
+                    testing.expect(false, "reopen store failed: ${e}")
+                }
+            }
+        }
+        Err(e) => {
+            testing.expect(false, "openStore failed: ${e}")
+        }
+    }
+}

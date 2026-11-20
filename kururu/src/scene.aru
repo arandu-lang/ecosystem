@@ -1,0 +1,108 @@
+module scene
+
+import std.alloc.vec as vec
+import self.math as math
+import self.tracer as tracer
+
+
+public struct Camera {
+    public origin: math.Vec3
+    public lower_left: math.Vec3
+    public horizontal: math.Vec3
+    public vertical: math.Vec3
+}
+
+public func Camera.getRay(self: ref Camera, u: f32, v: f32): tracer.Ray {
+    // direction = lower_left + horizontal * u + vertical * v - origin
+    let h = self.horizontal.scale(u)
+    let vert = self.vertical.scale(v)
+    let target = self.lower_left.add(h).add(vert)
+    let dir = target.sub(self.origin).normalize()
+    return tracer.Ray {
+        origin: self.origin,
+        direction: dir,
+    }
+}
+
+public struct Scene {
+    public spheres: vec.Vec<tracer.Sphere>
+    public lights: vec.Vec<tracer.Light>
+    public camera: Camera
+}
+
+
+public func buildDefaultCamera(): Camera {
+    return Camera {
+        origin: math.vec3(0.0, 1.0, 3.0),
+        lower_left: math.vec3(-2.0, -0.5, 1.0),
+        horizontal: math.vec3(4.0, 0.0, 0.0),
+        vertical: math.vec3(0.0, 3.0, 0.0),
+    }
+}
+
+public func buildScene(preset: uint): Scene {
+    let mut spheres = vec.Vec.new<tracer.Sphere>()
+    let mut lights = vec.Vec.new<tracer.Light>()
+
+    // Ground plane sphere
+    let ground = tracer.Sphere {
+        center: math.vec3(0.0, -1000.0, 0.0),
+        radius: 1000.0,
+        color: math.vec3(0.5, 0.5, 0.5),
+        shininess: 10.0,
+        reflectivity: 0.1,
+    }
+    spheres.push(ground)
+
+    // Center metallic sphere
+    let s1 = tracer.Sphere {
+        center: math.vec3(0.0, 1.0, -1.0),
+        radius: 1.0,
+        color: math.vec3(0.8, 0.2, 0.2),
+        shininess: 32.0,
+        reflectivity: 0.4,
+    }
+    spheres.push(s1)
+
+    // Left reflective sphere
+    let s2 = tracer.Sphere {
+        center: math.vec3(-2.2, 0.8, -1.5),
+        radius: 0.8,
+        color: math.vec3(0.2, 0.8, 0.3),
+        shininess: 64.0,
+        reflectivity: 0.6,
+    }
+    spheres.push(s2)
+
+    // Right glass/shiny sphere
+    let s3 = tracer.Sphere {
+        center: math.vec3(2.2, 0.8, -1.2),
+        radius: 0.8,
+        color: math.vec3(0.2, 0.4, 0.9),
+        shininess: 128.0,
+        reflectivity: 0.5,
+    }
+    spheres.push(s3)
+
+    // Main key light
+    let l1 = tracer.Light {
+        position: math.vec3(5.0, 8.0, 4.0),
+        color: math.vec3(1.0, 1.0, 1.0),
+        intensity: 0.9,
+    }
+    lights.push(l1)
+
+    // Fill light
+    let l2 = tracer.Light {
+        position: math.vec3(-4.0, 4.0, 2.0),
+        color: math.vec3(0.4, 0.5, 0.7),
+        intensity: 0.4,
+    }
+    lights.push(l2)
+
+    return Scene {
+        spheres: spheres,
+        lights: lights,
+        camera: buildDefaultCamera(),
+    }
+}

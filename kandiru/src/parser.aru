@@ -1,0 +1,466 @@
+module parser
+
+import std.alloc.vec as vec
+import std.core.slice as slice
+import std.core.str as strings
+
+/// All possible JSON value kinds.
+public enum JsonKind {
+    Null,
+    BoolTrue,
+    BoolFalse,
+    Integer,
+    Float,
+    String,
+    Array,
+    Object,
+}
+
+/// A single JSON node. Arrays and Objects store indices into the `JsonArena` node vector.
+/// String values store byte-offsets into the original input buffer for zero-copy access.
+public struct JsonNode {
+    public kind: JsonKind
+    /// For Integer: the i64 value.
+    public int_val: i64
+    /// For Float: the f64 value.
+    public float_val: f64
+    /// For String: start byte offset in the source buffer (zero-copy).
+    public str_start: usize
+    /// For String: length in bytes.
+    public str_len: usize
+    /// For Array/Object: index into children vec of first child slot.
+    public child_start: usize
+    /// For Array/Object: number of child slots.
+    public child_count: usize
+}
+
+/// A (key, value) pair for Object nodes.
+/// Key is stored as a byte range into the source buffer (zero-copy).
+public struct ObjectEntry {
+    public key_start: usize
+    public key_len: usize
+    public value_idx: usize
+}
+
+/// Error returned when parsing fails.
+public struct ParseError {
+    public message: str
+    public offset: usize
+}
+
+/// The arena owning all parsed JSON nodes.
+/// Source bytes are borrowed — the caller must keep the input buffer alive.
+public struct JsonArena {
+    public nodes: vec.Vec<JsonNode>
+    public entries: vec.Vec<ObjectEntry>
+    /// Flat index list: array children are consecutive node indices stored here.
+    public array_children: vec.Vec<usize>
+    /// Index of the root node.
+    public root: usize
+}
+
+public func emptyArena(): JsonArena {
+    return JsonArena {
+        nodes: vec.Vec.new<JsonNode>(),
+        entries: vec.Vec.new<ObjectEntry>(),
+        array_children: vec.Vec.new<usize>(),
+        root: 0,
+    }
+}
+
+public func JsonArena.destroy(self: mut ref JsonArena): void {
+}
+
+func nullNode(): JsonNode {
+    return JsonNode {
+        kind: JsonKind.Null,
+        int_val: 0, float_val: 0.0,
+        str_start: 0, str_len: 0,
+        child_start: 0, child_count: 0,
+    }
+}
+
+// ─── Parser state ─────────────────────────────────────────────────────────────
+
+struct Parser {
+    src: []u8
+    pos: usize
+    len: usize
+}
+
+func makeParser(src: []u8): Parser {
+    return Parser { src: src, pos: 0, len: slice.len<u8>(src) }
+}
+
+func Parser.peek(self: ref Parser): u8 {
+    if self.pos >= self.len { return 0 }
+    return self.src[self.pos]
+}
+
+func Parser.advance(self: mut ref Parser): void {
+    self.pos = self.pos + 1
+}
+
+func Parser.skipWs(self: mut ref Parser): void {
+    while self.pos < self.len {
+        let b = self.src[self.pos]
+        if b == 32 || b == 9 || b == 10 || b == 13 {
+            self.pos = self.pos + 1
+        } else {
+            break
+        }
+    }
+}
+
+func Parser.expect(self: mut ref Parser, b: u8): bool {
+    if self.pos < self.len && self.src[self.pos] == b {
+        self.pos = self.pos + 1
+        return true
+    }
+    return false
+}
+
+func isDigit(b: u8): bool {
+    return b >= 48 && b <= 57
+}
+
+func parseValue(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    p.skipWs()
+    if p.pos >= p.len {
+        return Result.Err(ParseError { message: "unexpected end of input", offset: p.pos })
+    }
+    let b = p.peek()
+
+    if b == b'n' { return parseNull(p, arena) }
+    if b == b't' { return parseTrue(p, arena) }
+    if b == b'f' { return parseFalse(p, arena) }
+    if b == b'"' { return parseString(p, arena) }
+    if b == b'[' { return parseArray(p, arena) }
+    if b == b'{' { return parseObject(p, arena) }
+    if b == b'-' || isDigit(b) { return parseNumber(p, arena) }
+
+    return Result.Err(ParseError { message: "unexpected character", offset: p.pos })
+}
+
+func parseNull(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    if p.pos + 4 > p.len { return Result.Err(ParseError { message: "truncated null", offset: p.pos }) }
+    if p.src[p.pos] != b'n' || p.src[p.pos + 1] != b'u'
+    || p.src[p.pos + 2] != b'l' || p.src[p.pos + 3] != b'l' {
+        return Result.Err(ParseError { message: "expected null", offset: p.pos })
+    }
+    p.pos = p.pos + 4
+    let idx = arena.nodes.len()
+    arena.nodes.push(nullNode())
+    return Result.Ok(idx)
+}
+
+func parseTrue(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    if p.pos + 4 > p.len { return Result.Err(ParseError { message: "truncated true", offset: p.pos }) }
+    if p.src[p.pos] != b't' || p.src[p.pos + 1] != b'r'
+    || p.src[p.pos + 2] != b'u' || p.src[p.pos + 3] != b'e' {
+        return Result.Err(ParseError { message: "expected true", offset: p.pos })
+    }
+    p.pos = p.pos + 4
+    let idx = arena.nodes.len()
+    let mut n = nullNode()
+    n.kind = JsonKind.BoolTrue
+    arena.nodes.push(n)
+    return Result.Ok(idx)
+}
+
+func parseFalse(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    if p.pos + 5 > p.len { return Result.Err(ParseError { message: "truncated false", offset: p.pos }) }
+    if p.src[p.pos] != b'f' || p.src[p.pos + 1] != b'a'
+    || p.src[p.pos + 2] != b'l' || p.src[p.pos + 3] != b's'
+    || p.src[p.pos + 4] != b'e' {
+        return Result.Err(ParseError { message: "expected false", offset: p.pos })
+    }
+    p.pos = p.pos + 5
+    let idx = arena.nodes.len()
+    let mut n = nullNode()
+    n.kind = JsonKind.BoolFalse
+    arena.nodes.push(n)
+    return Result.Ok(idx)
+}
+
+func parseString(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    p.advance() // consume opening '"'
+    let start = p.pos
+    while p.pos < p.len {
+        let c = p.src[p.pos]
+        if c == b'\\' {
+            p.pos = p.pos + 2
+            continue
+        }
+        if c == b'"' { break }
+        p.pos = p.pos + 1
+    }
+    if p.pos >= p.len {
+        return Result.Err(ParseError { message: "unterminated string", offset: start })
+    }
+    let end = p.pos
+    p.advance() // consume closing '"'
+    let idx = arena.nodes.len()
+    let mut n = nullNode()
+    n.kind = JsonKind.String
+    n.str_start = start
+    n.str_len = end - start
+    arena.nodes.push(n)
+    return Result.Ok(idx)
+}
+
+func parseNumber(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    let start = p.pos
+    let mut negative = false
+    if p.peek() == b'-' {
+        negative = true
+        p.advance()
+    }
+    if p.pos >= p.len || !isDigit(p.peek()) {
+        return Result.Err(ParseError { message: "invalid number", offset: start })
+    }
+    let mut int_part: i64 = 0
+    while p.pos < p.len && isDigit(p.peek()) {
+        int_part = int_part * 10 + (p.src[p.pos] - 48) as i64
+        p.advance()
+    }
+    let mut is_float = false
+    let mut frac: f64 = 0.0
+    let mut exp: i64 = 0
+    if p.pos < p.len && p.peek() == b'.' {
+        is_float = true
+        p.advance()
+        let mut divisor: f64 = 10.0
+        while p.pos < p.len && isDigit(p.peek()) {
+            frac = frac + (p.src[p.pos] - 48) as f64 / divisor
+            divisor = divisor * 10.0
+            p.advance()
+        }
+    }
+    if p.pos < p.len && (p.peek() == b'e' || p.peek() == b'E') {
+        is_float = true
+        p.advance()
+        let mut exp_neg = false
+        if p.pos < p.len && p.peek() == b'-' {
+            exp_neg = true
+            p.advance()
+        } else if p.pos < p.len && p.peek() == b'+' {
+            p.advance()
+        }
+        while p.pos < p.len && isDigit(p.peek()) {
+            exp = exp * 10 + (p.src[p.pos] - 48) as i64
+            p.advance()
+        }
+        if exp_neg { exp = -exp }
+    }
+
+    let idx = arena.nodes.len()
+    let mut n = nullNode()
+    if is_float {
+        n.kind = JsonKind.Float
+        let base = int_part as f64 + frac
+        let mut fval = base
+        if exp > 0 {
+            let mut ei: i64 = 0
+            while ei < exp { fval = fval * 10.0  ei = ei + 1 }
+        } else if exp < 0 {
+            let mut ei: i64 = exp
+            while ei < 0 { fval = fval / 10.0  ei = ei + 1 }
+        }
+        if negative { fval = -fval }
+        n.float_val = fval
+    } else {
+        n.kind = JsonKind.Integer
+        if negative { int_part = -int_part }
+        n.int_val = int_part
+    }
+    arena.nodes.push(n)
+    return Result.Ok(idx)
+}
+
+func parseArray(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    p.advance() // consume '['
+    p.skipWs()
+    // Reserve slot for the array node; we'll fill child_start and child_count after parsing.
+    let node_idx = arena.nodes.len()
+    let child_start = arena.array_children.len()
+    let mut placeholder = nullNode()
+    placeholder.kind = JsonKind.Array
+    arena.nodes.push(placeholder)
+
+    if p.pos < p.len && p.peek() == b']' {
+        p.advance()
+        // Update placeholder with final counts.
+        let mut final_node = nullNode()
+        final_node.kind = JsonKind.Array
+        final_node.child_start = child_start
+        final_node.child_count = 0
+        arena.nodes.set(node_idx, final_node)
+        return Result.Ok(node_idx)
+    }
+
+    let mut child_count: usize = 0
+    let mut first = true
+    while p.pos < p.len {
+        p.skipWs()
+        if !first {
+            if p.peek() == b']' { break }
+            if !p.expect(b',') {
+                return Result.Err(ParseError { message: "expected ',' in array", offset: p.pos })
+            }
+            p.skipWs()
+        }
+        first = false
+        if p.pos < p.len && p.peek() == b']' { break }
+        match parseValue(p, arena) {
+            Ok(child_idx) => {
+                arena.array_children.push(child_idx)
+                child_count = child_count + 1
+            }
+            Err(e) => { return Result.Err(e) }
+        }
+        p.skipWs()
+    }
+    if !p.expect(b']') {
+        return Result.Err(ParseError { message: "expected ']'", offset: p.pos })
+    }
+    // Update the placeholder node with final child_start and child_count.
+    let mut final_node = nullNode()
+    final_node.kind = JsonKind.Array
+    final_node.child_start = child_start
+    final_node.child_count = child_count
+    arena.nodes.set(node_idx, final_node)
+    return Result.Ok(node_idx)
+}
+
+func parseObject(p: mut ref Parser, arena: mut ref JsonArena): Result<usize, ParseError> {
+    p.advance() // consume '{'
+    p.skipWs()
+    let node_idx = arena.nodes.len()
+    let entry_start = arena.entries.len()
+    let mut placeholder = nullNode()
+    placeholder.kind = JsonKind.Object
+    arena.nodes.push(placeholder)
+
+    if p.pos < p.len && p.peek() == b'}' {
+        p.advance()
+        let mut final_node = nullNode()
+        final_node.kind = JsonKind.Object
+        final_node.child_start = entry_start
+        final_node.child_count = 0
+        arena.nodes.set(node_idx, final_node)
+        return Result.Ok(node_idx)
+    }
+
+    let mut child_count: usize = 0
+    let mut first = true
+    while p.pos < p.len {
+        p.skipWs()
+        if !first {
+            if p.peek() == b'}' { break }
+            if !p.expect(b',') {
+                return Result.Err(ParseError { message: "expected ',' in object", offset: p.pos })
+            }
+            p.skipWs()
+        }
+        first = false
+        if p.pos < p.len && p.peek() == b'}' { break }
+
+        // Parse key string.
+        if p.peek() != b'"' {
+            return Result.Err(ParseError { message: "expected string key", offset: p.pos })
+        }
+        p.advance() // opening '"'
+        let key_start = p.pos
+        while p.pos < p.len {
+            let c = p.src[p.pos]
+            if c == b'\\' { p.pos = p.pos + 2  continue }
+            if c == b'"' { break }
+            p.pos = p.pos + 1
+        }
+        if p.pos >= p.len {
+            return Result.Err(ParseError { message: "unterminated key string", offset: key_start })
+        }
+        let key_end = p.pos
+        p.advance() // closing '"'
+        p.skipWs()
+        if !p.expect(b':') {
+            return Result.Err(ParseError { message: "expected ':' after key", offset: p.pos })
+        }
+        p.skipWs()
+
+        match parseValue(p, arena) {
+            Ok(val_idx) => {
+                let entry = ObjectEntry {
+                    key_start: key_start,
+                    key_len: key_end - key_start,
+                    value_idx: val_idx,
+                }
+                arena.entries.push(entry)
+                child_count = child_count + 1
+            }
+            Err(e) => { return Result.Err(e) }
+        }
+        p.skipWs()
+    }
+    if !p.expect(b'}') {
+        return Result.Err(ParseError { message: "expected '}'", offset: p.pos })
+    }
+    let mut final_node = nullNode()
+    final_node.kind = JsonKind.Object
+    final_node.child_start = entry_start
+    final_node.child_count = child_count
+    arena.nodes.set(node_idx, final_node)
+    return Result.Ok(node_idx)
+}
+
+/// Parse a JSON byte slice into a `JsonArena`. Returns the arena or a `ParseError`.
+/// The arena borrows the source bytes — do not free `src` before `arena.destroy()`.
+public func parseJson(src: []u8): Result<JsonArena, ParseError> {
+    let mut arena = emptyArena()
+    let mut p = makeParser(src)
+    match parseValue(mut ref p, mut ref arena) {
+        Ok(root) => {
+            arena.root = root
+            return Result.Ok(arena)
+        }
+        Err(e) => {
+            return Result.Err(e)
+        }
+    }
+}
+
+/// Returns the `JsonNode` at index `idx`.
+///
+/// The node is a plain data record and is returned by value; it does not
+/// borrow the arena, so callers are free to keep it across mutations.
+public func JsonArena.node(self: ref JsonArena, idx: usize): JsonNode {
+    let s = self.nodes.asSlice()
+    return s[idx]
+}
+
+/// Returns the string content of a String node as a byte slice (zero-copy).
+public func JsonArena.nodeStrBytes(self: ref JsonArena, src: []u8, idx: usize): []u8 {
+    let s = self.nodes.asSlice()
+    let n = s[idx]
+    match slice.subslice<u8>(src, n.str_start, n.str_len) {
+        Some(sub) => { return sub }
+        None => { return strings.asBytes("") }
+    }
+}
+
+/// Returns the i-th child node index of an Array node.
+public func JsonArena.arrayChild(self: ref JsonArena, node_idx: usize, i: usize): usize {
+    let ns = self.nodes.asSlice()
+    let n = ref ns[node_idx]
+    let ac = self.array_children.asSlice()
+    return ac[n.child_start + i]
+}
+
+/// Returns the i-th ObjectEntry of an Object node.
+public func JsonArena.objectEntry(self: ref JsonArena, node_idx: usize, i: usize): ref ObjectEntry {
+    let ns = self.nodes.asSlice()
+    let n = ref ns[node_idx]
+    let es = self.entries.asSlice()
+    return ref es[n.child_start + i]
+}

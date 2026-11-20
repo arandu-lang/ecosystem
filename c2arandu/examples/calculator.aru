@@ -1,0 +1,36 @@
+//! Arquivo gerado automaticamente pelo c2arandu
+//! Baseado na arquitetura Dual-Locus & OSSA da linguagem Arandu.
+
+// --- Funções Definidas e Transpiladas ---
+public func calculate(op: int, a: int, b: int): int {
+    let mut res: int = 0
+    match op {
+        1 => {
+            res = (a + b)
+        }
+        2 => {
+            res = (a - b)
+        }
+        3 => {
+            res = (a * b)
+        }
+        _ => {
+            res = 0
+        }
+    }
+    return res
+}
+
+public func count_down(_start: int, verbose: int): int {
+    let mut start = _start
+    let mut count: int = 0
+    if (verbose != 0) {
+        count = 1
+    }
+    while (start > 0) {
+        start = start - 1
+        count = count + 1
+    }
+    return count
+}
+
